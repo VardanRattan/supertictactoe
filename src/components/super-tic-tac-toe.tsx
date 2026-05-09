@@ -241,7 +241,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
   };
 
   const handleClick = (gameIndex: number, cellIndex: number) => {
-    if (!gameStarted || superWinner || isProcessing) return;
+    if (!gameStarted || superWinner) return;
 
     if (activeGame !== null && activeGame !== gameIndex) {
       playSound('error');
