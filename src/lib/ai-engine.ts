@@ -15,6 +15,8 @@ export interface GameState {
   superWinner: string | null;
   lastMove: Move | null;
   gameStarted: boolean;
+  previousGame?: number | null;
+  gameHistory?: number[];
 }
 
 type AnalysisData = Record<string, unknown>;
@@ -1319,6 +1321,38 @@ const EnhancedAIEngine = {
     return moves;
   },
 
+  findValidGame: (targetGame: number | null, currentSuperBoard: (string | null)[][], previousGame: number | null, gameHistory: number[]): number | null => {
+    const isGamePlayable = (gameIdx: number | null): boolean => {
+      if (gameIdx === null) return false;
+      return currentSuperBoard[gameIdx].some(cell => cell === null);
+    };
+
+    if (targetGame !== null && isGamePlayable(targetGame)) {
+      return targetGame;
+    }
+
+    if (previousGame !== null && isGamePlayable(previousGame)) {
+      return previousGame;
+    }
+
+    if (gameHistory) {
+      for (let i = gameHistory.length - 1; i >= 0; i--) {
+        const historicGame = gameHistory[i];
+        if (isGamePlayable(historicGame)) {
+          return historicGame;
+        }
+      }
+    }
+
+    for (let i = 0; i < 9; i++) {
+      if (isGamePlayable(i)) {
+        return i;
+      }
+    }
+    
+    return null;
+  },
+
   simulateMove: (gameState: GameState, move: Move) => {
     const newState: GameState = JSON.parse(JSON.stringify(gameState));
     newState.superBoard[move.game][move.cell] = newState.currentPlayer;
@@ -1329,8 +1363,18 @@ const EnhancedAIEngine = {
       newState.gameOwnership[move.game] = newState.currentPlayer;
     }
 
+    newState.previousGame = newState.activeGame;
+    newState.gameHistory = [...(newState.gameHistory || []), move.game];
+    newState.lastMove = move;
+    
+    newState.activeGame = EnhancedAIEngine.findValidGame(
+      move.cell, 
+      newState.superBoard, 
+      newState.previousGame || null, 
+      newState.gameHistory
+    );
+
     newState.currentPlayer = newState.currentPlayer === 'X' ? 'O' : 'X';
-    newState.activeGame = (newState.superBoard[move.cell].some(c => c === null)) ? move.cell : null;
     return newState;
   },
 
@@ -1342,6 +1386,7 @@ const EnhancedAIEngine = {
     if (gameState.superWinner === player) return 1000000;
     if (gameState.superWinner === opponent) return -1000000;
 
+    // 1. Super Board Position Evaluation
     gameState.superBoard.forEach((game, idx) => {
       const pStrength = WinningAnalyzer.evaluateBoardStrength(game, player);
       const oStrength = WinningAnalyzer.evaluateBoardStrength(game, opponent);
@@ -1351,10 +1396,59 @@ const EnhancedAIEngine = {
       if (gameState.gameOwnership[idx] === opponent) score -= 500;
     });
 
+    // 2. Routing Destination Scoring (Critical Bug Fix #3)
+    if (gameState.activeGame !== null) {
+      const nextGame = gameState.superBoard[gameState.activeGame];
+      const nextGameOwner = gameState.gameOwnership[gameState.activeGame];
+      
+      if (!nextGameOwner) {
+        const pNextStrength = WinningAnalyzer.evaluateBoardStrength(nextGame, player);
+        const oNextStrength = WinningAnalyzer.evaluateBoardStrength(nextGame, opponent);
+
+        // If it's the opponent's turn, we want to send them to a game where they have NO threats
+        // and WE have potential.
+        if (gameState.currentPlayer === opponent) {
+          score -= oNextStrength.winningThreats * 300;
+          score -= oNextStrength.forkPotential * 200;
+          score += pNextStrength.winningThreats * 150;
+        } else {
+          // If it's our turn, we want to be in a game where we have threats
+          score += pNextStrength.winningThreats * 300;
+          score += pNextStrength.forkPotential * 200;
+        }
+      }
+    }
+
+    // 3. Phase-Based Strategic Scoring (Critical Bug Fix #2)
+    const currentPhase = PhaseManager.state.currentPhase;
+    if (currentPhase) {
+      const strategicTargets = PhaseManager.state.strategicTargets;
+      if (strategicTargets.size > 0) {
+        gameState.gameOwnership.forEach((owner, idx) => {
+          if (strategicTargets.has(idx)) {
+            if (owner === player) score += 300;
+            if (owner === opponent) score -= 300;
+          }
+        });
+      }
+      
+      // Additional phase-specific heuristics
+      if (currentPhase === AI_CONFIG.PHASES.ENDGAME) {
+        const criticalGames = PhaseManager.phaseStrategies[AI_CONFIG.PHASES.ENDGAME].identifyCriticalGames(gameState);
+        if (criticalGames) {
+          criticalGames.forEach((idx: number) => {
+            if (gameState.gameOwnership[idx] === player) score += 1000;
+            else if (gameState.gameOwnership[idx] === opponent) score -= 1000;
+          });
+        }
+      }
+    }
+
     return score;
   },
 
   findFirstMove: (gameState: GameState) => {
+    if (gameState.lastMove) return gameState.lastMove.game;
     for (let i = 0; i < 9; i++) {
       for (let j = 0; j < 9; j++) {
         if (gameState.superBoard[i][j] !== null) return i;

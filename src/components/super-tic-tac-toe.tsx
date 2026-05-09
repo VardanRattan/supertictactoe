@@ -16,6 +16,8 @@ export interface GameState {
   superWinner: string | null;
   lastMove: { game: number; cell: number } | null;
   gameStarted: boolean;
+  previousGame?: number | null;
+  gameHistory?: number[];
 }
 
 export interface SuperTicTacToeHandle {
@@ -107,8 +109,10 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     gameOwnership,
     superWinner,
     lastMove,
-    gameStarted
-  }), [superBoard, currentPlayer, activeGame, gameOwnership, superWinner, lastMove, gameStarted]);
+    gameStarted,
+    previousGame,
+    gameHistory
+  }), [superBoard, currentPlayer, activeGame, gameOwnership, superWinner, lastMove, gameStarted, previousGame, gameHistory]);
 
   useEffect(() => {
     if (!gameStarted) return;
