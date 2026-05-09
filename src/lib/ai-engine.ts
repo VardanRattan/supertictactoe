@@ -1311,13 +1311,35 @@ const EnhancedAIEngine = {
   getValidMoves: (gameState: GameState) => {
     const moves: Move[] = [];
     const { activeGame, superBoard } = gameState;
+    
+    // If we have a specific active game, and it's not full, we MUST play there.
     if (activeGame !== null && superBoard[activeGame].some(cell => cell === null)) {
-      superBoard[activeGame].forEach((cell, idx) => { if (cell === null) moves.push({ game: activeGame, cell: idx }); });
+      superBoard[activeGame].forEach((cell, idx) => { 
+        if (cell === null) moves.push({ game: activeGame, cell: idx }); 
+      });
       return moves;
     }
+
+    // If activeGame is null or the target game is full (should be handled by routing, 
+    // but this is the robust fallback), we can play anywhere that is not won/full.
     superBoard.forEach((game, gameIdx) => {
-      game.forEach((cell, cellIdx) => { if (cell === null) moves.push({ game: gameIdx, cell: cellIdx }); });
+      // Only allow playing in games that aren't already owned and aren't full
+      if (!gameState.gameOwnership[gameIdx] && game.some(cell => cell === null)) {
+        game.forEach((cell, cellIdx) => { 
+          if (cell === null) moves.push({ game: gameIdx, cell: cellIdx }); 
+        });
+      }
     });
+    
+    // Final fallback: if everything is won but there are still empty cells (rare draw state)
+    if (moves.length === 0) {
+      superBoard.forEach((game, gameIdx) => {
+        game.forEach((cell, cellIdx) => { 
+          if (cell === null) moves.push({ game: gameIdx, cell: cellIdx }); 
+        });
+      });
+    }
+
     return moves;
   },
 
@@ -1335,7 +1357,7 @@ const EnhancedAIEngine = {
       return previousGame;
     }
 
-    if (gameHistory) {
+    if (gameHistory && gameHistory.length > 0) {
       for (let i = gameHistory.length - 1; i >= 0; i--) {
         const historicGame = gameHistory[i];
         if (isGamePlayable(historicGame)) {
@@ -1355,26 +1377,37 @@ const EnhancedAIEngine = {
 
   simulateMove: (gameState: GameState, move: Move) => {
     const newState: GameState = JSON.parse(JSON.stringify(gameState));
-    newState.superBoard[move.game][move.cell] = newState.currentPlayer;
+    const player = newState.currentPlayer!;
+    newState.superBoard[move.game][move.cell] = player;
     
     // Check if move wins the local game
-    const winResult = WinningAnalyzer.isWinningBoard(newState.superBoard[move.game], newState.currentPlayer!);
+    const winResult = WinningAnalyzer.isWinningBoard(newState.superBoard[move.game], player);
     if (winResult) {
-      newState.gameOwnership[move.game] = newState.currentPlayer;
+      newState.gameOwnership[move.game] = player;
+      
+      // Critical Fix: Check if this move wins the Super Board (Terminal Detection)
+      if (WinningAnalyzer.isWinningBoard(newState.gameOwnership, player)) {
+        newState.superWinner = player;
+      }
     }
 
     newState.previousGame = newState.activeGame;
     newState.gameHistory = [...(newState.gameHistory || []), move.game];
     newState.lastMove = move;
     
-    newState.activeGame = EnhancedAIEngine.findValidGame(
-      move.cell, 
-      newState.superBoard, 
-      newState.previousGame || null, 
-      newState.gameHistory
-    );
+    // Don't calculate next active game if the match is already won
+    if (!newState.superWinner) {
+      newState.activeGame = EnhancedAIEngine.findValidGame(
+        move.cell, 
+        newState.superBoard, 
+        newState.previousGame || null, 
+        newState.gameHistory
+      );
+    } else {
+      newState.activeGame = null;
+    }
 
-    newState.currentPlayer = newState.currentPlayer === 'X' ? 'O' : 'X';
+    newState.currentPlayer = player === 'X' ? 'O' : 'X';
     return newState;
   },
 
@@ -1396,7 +1429,7 @@ const EnhancedAIEngine = {
       if (gameState.gameOwnership[idx] === opponent) score -= 500;
     });
 
-    // 2. Routing Destination Scoring (Critical Bug Fix #3)
+    // 2. Routing Destination Scoring (Critical Bug Fix #3 - Refined Perspective)
     if (gameState.activeGame !== null) {
       const nextGame = gameState.superBoard[gameState.activeGame];
       const nextGameOwner = gameState.gameOwnership[gameState.activeGame];
@@ -1405,17 +1438,13 @@ const EnhancedAIEngine = {
         const pNextStrength = WinningAnalyzer.evaluateBoardStrength(nextGame, player);
         const oNextStrength = WinningAnalyzer.evaluateBoardStrength(nextGame, opponent);
 
-        // If it's the opponent's turn, we want to send them to a game where they have NO threats
-        // and WE have potential.
-        if (gameState.currentPlayer === opponent) {
-          score -= oNextStrength.winningThreats * 300;
-          score -= oNextStrength.forkPotential * 200;
-          score += pNextStrength.winningThreats * 150;
-        } else {
-          // If it's our turn, we want to be in a game where we have threats
-          score += pNextStrength.winningThreats * 300;
-          score += pNextStrength.forkPotential * 200;
-        }
+        const isOurTurn = gameState.currentPlayer === player;
+        
+        // If it's our turn to play in the destination, we want high offensive potential for US.
+        // If it's the opponent's turn, we want LOW offensive potential for THEM.
+        score += isOurTurn
+          ? (pNextStrength.winningThreats * 300 + pNextStrength.forkPotential * 200)
+          : -(oNextStrength.winningThreats * 300 + oNextStrength.forkPotential * 200);
       }
     }
 
