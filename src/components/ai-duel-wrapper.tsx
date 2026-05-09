@@ -51,6 +51,7 @@ const AIDuelWrapper = ({ mode, onNewGameRequest }: AIDuelWrapperProps) => {
         onPlayerChoice={handlePlayerChoice}
         onGameStateChange={handleGameStateChange}
         onNewGameRequest={onNewGameRequest}
+        isProcessing={isProcessing}
       />
     </div>
   );

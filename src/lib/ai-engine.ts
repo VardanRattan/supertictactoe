@@ -133,17 +133,17 @@ const AI_CONFIG = {
     FORK_SETUP: 400,
     CONNECTION_STRENGTH: 100,
     PHASE_MULTIPLIERS: {
-      EARLY_GAME: 1.0,
+      EARLY_GAME: 1.2,
       MID_GAME: 1.5,
       LATE_GAME: 2.0,
       ENDGAME: 2.5,
-      SABOTAGE: 1.0,
+      SABOTAGE: 1.3,
       CONTROL: 1.5,
       SACRIFICE: 2.0
     } as Record<string, number>
   },
   DYNAMIC_WEIGHTS: {
-    EARLY_GAME: { CORNER_VALUE: 200, CENTER_VALUE: 300, EDGE_VALUE: 150, CONNECTIVITY: 250, BLOCKING: 300 },
+    EARLY_GAME: { CORNER_VALUE: 250, CENTER_VALUE: 350, EDGE_VALUE: 180, CONNECTIVITY: 300, BLOCKING: 250 },
     MID_GAME: { CORNER_VALUE: 300, CENTER_VALUE: 400, EDGE_VALUE: 200, CONNECTIVITY: 450, BLOCKING: 500 },
     LATE_GAME: { CORNER_VALUE: 400, CENTER_VALUE: 500, EDGE_VALUE: 300, CONNECTIVITY: 600, BLOCKING: 700 }
   } as Record<string, any>
@@ -155,10 +155,15 @@ const PatternCache = {
   boardPatterns: new Map<string, PatternAnalysis>(),
   gameAnalysis: new Map<string, GameAnalysis>(),
   patternTypeCache: new Map<string, { analysis: StrategicAnalysis; timestamp: number }>(),
+  MAX_CACHE_SIZE: 5000,
   
   generateKey: (board: (string | null)[], player: string) => `${board.join('')}-${player}`,
   
   cachePatternAnalysis: (board: (string | null)[], player: string, analysis: PatternAnalysis) => {
+    if (PatternCache.boardPatterns.size >= PatternCache.MAX_CACHE_SIZE) {
+      const firstKey = PatternCache.boardPatterns.keys().next().value;
+      if (firstKey) PatternCache.boardPatterns.delete(firstKey);
+    }
     const key = PatternCache.generateKey(board, player);
     const existing = PatternCache.boardPatterns.get(key) || {};
     PatternCache.boardPatterns.set(key, { ...existing, ...analysis });

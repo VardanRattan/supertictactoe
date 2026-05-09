@@ -29,6 +29,7 @@ interface SuperTicTacToeProps {
   onNewGameRequest?: () => void;
   isAIGame?: boolean;
   onPlayerChoice?: (choice: 'X' | 'O') => void;
+  isProcessing?: boolean;
 }
 
 const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({ 
@@ -37,6 +38,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
   onNewGameRequest,
   isAIGame = false,
   onPlayerChoice,
+  isProcessing = false,
 }, ref) => {
   // Initialize 9x9 board (9 games, each with 9 cells)
   const createEmptyBoard = () => Array(9).fill(null).map(() => Array(9).fill(null));
@@ -239,7 +241,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
   };
 
   const handleClick = (gameIndex: number, cellIndex: number) => {
-    if (!gameStarted || superWinner) return;
+    if (!gameStarted || superWinner || isProcessing) return;
 
     if (activeGame !== null && activeGame !== gameIndex) {
       playSound('error');
@@ -329,7 +331,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
           shadow-md hover:shadow-lg
         `}
         onClick={() => isPlayable && !superWinner ? handleClick(gameIndex, cellIndex) : null}
-        disabled={!isPlayable || !!superWinner}
+        disabled={!isPlayable || !!superWinner || isProcessing}
       >
         {value}
       </button>
