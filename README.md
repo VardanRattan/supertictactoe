@@ -1,36 +1,62 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Super Tic Tac Toe
 
-## Getting Started
+A strategic, multi-layered version of Tic Tac Toe built with Next.js, TypeScript, and Tailwind CSS. Challenge a friend in Pass & Play mode or test your skills against our advanced AI Duel engine.
 
-First, run the development server:
+## 🎮 Game Modes
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- **Pass & Play:** Play locally with a friend on the same device.
+- **AI Duel:** Face off against an advanced AI that uses minimax optimization and strategic phase analysis.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 📜 How to Play (Rules)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Super Tic Tac Toe consists of nine individual Tic Tac Toe games arranged in a 3x3 grid (the "Super Board").
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### The Basics
+- Your goal is to win three connected games (horizontal, vertical, or diagonal) to claim victory on the Super Board.
 
-## Learn More
+### Strategic Movement
+- The first player can place their mark (O/X) anywhere on any board.
+- **The Twist:** Your move determines where your opponent must play next. If you play in the top-right square of an individual game, your opponent must make their next move in the top-right game of the Super Board.
 
-To learn more about Next.js, take a look at the following resources:
+### Winning Games
+- Win individual games by connecting three of your marks within that 3x3 grid.
+- Once a game is won, it belongs to that player. However, you can still be sent to a won game; playing there still directs your opponent's next move.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Special Rules
+- If you are sent to a game that is already full, you are allowed to play in the game where your opponent previously marked.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## 🤖 AI Engine Features
 
-## Deploy on Vercel
+- **Minimax Algorithm:** Optimized search for the best possible moves.
+- **Phase-Based Strategy:** The AI adapts its playstyle (Sabotage, Control, Sacrifice, Endgame) based on the current board state.
+- **Iterative Deepening:** Balances calculation depth with response time.
+- **Heuristic Evaluation:** Sophisticated scoring based on board strength, fork potential, and center/corner control.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## 🚀 Live Demo
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Check out the live game here: [https://VardanRattan.github.io/supertictactoe/](https://VardanRattan.github.io/supertictactoe/)
+
+## 🛠️ Tech Stack
+
+- **Framework:** Next.js 15
+- **Language:** TypeScript
+- **Styling:** Tailwind CSS 4
+- **Icons:** Lucide React
+- **Audio:** Custom sound effects for moves and victories
+
+## 🛠️ Local Development
+
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+2. Run the development server:
+   ```bash
+   npm run dev
+   ```
+
+3. Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+---
+Created by [Vardan Rattan](https://github.com/VardanRattan)
