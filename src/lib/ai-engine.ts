@@ -458,7 +458,7 @@ const MinimaxOptimizer = {
   },
 
   generatePositionKey: (gameState: GameState) => {
-    return `${gameState.superBoard.map(game => game.join('')).join('')}-${gameState.currentPlayer}-${gameState.activeGame}`;
+    return `${gameState.superBoard.map(game => game.join('')).join('')}-${gameState.currentPlayer}-${gameState.activeGame}-${gameState.previousGame ?? 'null'}`;
   },
 
   getCachedEvaluation: (gameState: GameState, depth: number) => {
@@ -1343,7 +1343,7 @@ const EnhancedAIEngine = {
     return moves;
   },
 
-  findValidGame: (targetGame: number | null, currentSuperBoard: (string | null)[][], previousGame: number | null, gameHistory: number[]): number | null => {
+  findValidGame: (targetGame: number | null, currentSuperBoard: (string | null)[][], fallbackGame: number | null, gameHistory: number[]): number | null => {
     const isGamePlayable = (gameIdx: number | null): boolean => {
       if (gameIdx === null) return false;
       return currentSuperBoard[gameIdx].some(cell => cell === null);
@@ -1353,8 +1353,8 @@ const EnhancedAIEngine = {
       return targetGame;
     }
 
-    if (previousGame !== null && isGamePlayable(previousGame)) {
-      return previousGame;
+    if (fallbackGame !== null && isGamePlayable(fallbackGame)) {
+      return fallbackGame;
     }
 
     if (gameHistory && gameHistory.length > 0) {
@@ -1400,7 +1400,7 @@ const EnhancedAIEngine = {
       newState.activeGame = EnhancedAIEngine.findValidGame(
         move.cell, 
         newState.superBoard, 
-        newState.previousGame || null, 
+        move.game, 
         newState.gameHistory
       );
     } else {

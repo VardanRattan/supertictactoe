@@ -170,7 +170,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     return board.every(game => isGameFilled(game));
   };
 
-  const findValidGame = (targetGame: number | null, currentSuperBoard: (string | null)[][]): number | null => {
+  const findValidGame = (targetGame: number | null, currentSuperBoard: (string | null)[][], fallbackGame: number | null = null): number | null => {
     const isGamePlayable = (gameIdx: number | null): boolean => {
       if (gameIdx === null) return false;
       return currentSuperBoard[gameIdx].some(cell => cell === null);
@@ -180,8 +180,8 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
       return targetGame;
     }
 
-    if (previousGame !== null && isGamePlayable(previousGame)) {
-      return previousGame;
+    if (fallbackGame !== null && isGamePlayable(fallbackGame)) {
+      return fallbackGame;
     }
 
     for (let i = gameHistory.length - 1; i >= 0; i--) {
@@ -298,7 +298,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     const nextPlayer = currentPlayer === 'O' ? 'X' : 'O';
     setCurrentPlayer(nextPlayer);
 
-    const nextGame = findValidGame(cellIndex, newSuperBoard);
+    const nextGame = findValidGame(cellIndex, newSuperBoard, gameIndex);
     if (nextGame === null) {
       const anyPlayableGame = Array.from({length: 9}).some((_, idx) => 
         newSuperBoard[idx].some(cell => cell === null)
@@ -309,7 +309,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
         playSound('error');
         return;
       } else {
-        const safetyGame = findValidGame(null, newSuperBoard);
+        const safetyGame = findValidGame(null, newSuperBoard, gameIndex);
         setActiveGame(safetyGame);
         return;
       }
