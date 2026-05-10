@@ -83,12 +83,13 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
   // Sound effects setup (with SSR safety)
   const audioRefs = useMemo(() => {
     if (typeof window === 'undefined') return null;
+    const prefix = process.env.NODE_ENV === 'production' ? '/supertictactoe' : '';
     return {
-      moveO: '/sounds/moveO.mp3',
-      moveX: '/sounds/moveX.mp3',
-      win: '/sounds/win.mp3',
-      superWin: '/sounds/superWin.mp3',
-      error: '/sounds/error.mp3'
+      moveO: `${prefix}/sounds/moveO.mp3`,
+      moveX: `${prefix}/sounds/moveX.mp3`,
+      win: `${prefix}/sounds/win.mp3`,
+      superWin: `${prefix}/sounds/superWin.mp3`,
+      error: `${prefix}/sounds/error.mp3`
     };
   }, []);
 
