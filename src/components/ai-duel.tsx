@@ -1,15 +1,15 @@
 "use client";
 
 import React, { useState, useRef, useCallback } from 'react';
-import SuperTicTacToe, { SuperTicTacToeHandle, GameState } from './super-tic-tac-toe';
+import SuperTicTacToeBoard, { SuperTicTacToeHandle, GameState } from './super-tic-tac-toe-board';
 import EnhancedAIEngine from '@/lib/ai-engine';
 
-interface AIDuelWrapperProps {
+interface AIDuelProps {
   mode: 'ai_duel' | string;
   onNewGameRequest: () => void;
 }
 
-const AIDuelWrapper = ({ mode, onNewGameRequest }: AIDuelWrapperProps) => {
+const AIDuel = ({ mode, onNewGameRequest }: AIDuelProps) => {
   const gameRef = useRef<SuperTicTacToeHandle>(null);
   const [aiPlayer, setAiPlayer] = useState<'X' | 'O' | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -44,7 +44,7 @@ const AIDuelWrapper = ({ mode, onNewGameRequest }: AIDuelWrapperProps) => {
           AI is thinking...
         </div>
       )}
-      <SuperTicTacToe
+      <SuperTicTacToeBoard
         ref={gameRef}
         mode={mode}
         isAIGame={true}
@@ -57,4 +57,4 @@ const AIDuelWrapper = ({ mode, onNewGameRequest }: AIDuelWrapperProps) => {
   );
 };
 
-export default AIDuelWrapper;
+export default AIDuel;

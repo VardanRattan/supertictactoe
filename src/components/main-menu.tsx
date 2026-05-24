@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { motion } from 'framer-motion';
 import { Users, Bot, UserPlus, Globe, ArrowLeftCircle, Smile } from 'lucide-react';
 
 // Humorous messages
@@ -33,28 +34,38 @@ interface GameModeProps {
   onClick: () => void;
 }
 
-// GameMode component for individual tiles
+// GameMode component for individual tiles with rich animations
 const GameMode = ({ title, icon: Icon, disabled, onClick }: GameModeProps) => (
-  <button
+  <motion.button
     onClick={onClick}
     disabled={disabled}
+    whileHover={disabled ? {} : { scale: 1.05, y: -4 }}
+    whileTap={disabled ? {} : { scale: 0.98 }}
+    transition={{ type: "spring", stiffness: 400, damping: 20 }}
     className={`
-      relative w-full max-w-[300px] sm:max-w-[250px] aspect-square
-      bg-gray-800 rounded-xl p-6
-      flex flex-col items-center justify-center gap-4
-      transition-all duration-200
-      border border-gray-700
-      ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-700 hover:scale-105 shadow-xl'}
+      relative w-full max-w-[280px] sm:max-w-[240px] aspect-square
+      md:aspect-auto md:w-[280px] md:h-[100px] md:max-w-none
+      glass-card rounded-2xl p-4 sm:p-6
+      flex flex-col md:flex-row items-center md:items-center justify-center md:justify-start gap-3 sm:gap-4
+      border border-white/5
+      ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}
     `}
   >
-    <Icon size={48} className={disabled ? 'text-gray-400' : 'text-yellow-400'} />
-    <h2 className="text-lg sm:text-xl font-bold text-gray-100">{title}</h2>
+    <Icon 
+      size={36} 
+      className={`transition-colors duration-300 shrink-0 ${
+        disabled 
+          ? 'text-gray-500' 
+          : 'text-yellow-400 drop-shadow-[0_0_8px_rgba(234,179,8,0.4)] group-hover:text-yellow-300'
+      }`} 
+    />
+    <h2 className="text-base sm:text-lg md:text-xl font-bold text-gray-100 tracking-wide">{title}</h2>
     {disabled && (
-      <div className="absolute top-2 right-2 bg-gray-900 px-2 py-1 rounded text-sm text-gray-400">
+      <div className="absolute top-2 right-2 bg-gray-950/70 border border-white/5 px-2 py-0.5 rounded-full text-[10px] text-gray-400">
         Coming Soon
       </div>
     )}
-  </button>
+  </motion.button>
 );
 
 interface MainMenuProps {
@@ -68,7 +79,7 @@ const MainMenu = ({ onModeSelect }: MainMenuProps) => {
   const modes = useMemo(() => [
     { id: 'pass_and_play', title: 'Pass & Play', icon: Users, disabled: false },
     { id: 'ai_duel', title: 'AI Duel', icon: Bot, disabled: false },
-    { id: 'friend_battle', title: 'Friend Battle', icon: UserPlus, disabled: true },
+    { id: 'friend_battle', title: 'Friend Battle', icon: UserPlus, disabled: false },
     { id: 'online_arena', title: 'Online Arena', icon: Globe, disabled: true }
   ], []);
 
@@ -82,34 +93,58 @@ const MainMenu = ({ onModeSelect }: MainMenuProps) => {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col p-4">
-      <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col p-4" style={{ paddingTop: 0 }}>
-        <h1 className="text-4xl md:text-5xl font-bold text-yellow-400 text-center mt-8 md:mt-12">
-          Super Tic Tac Toe
-        </h1>
-        <div className="container mx-auto flex-1 flex flex-col items-center gap-6 sm:gap-8 mt-10 sm:mt-12">
-          <div className="grid grid-cols-2 gap-6 sm:gap-8 w-full max-w-3xl justify-items-center">
-            {modes.map((mode) => (
-              <GameMode
-                key={mode.id}
-                title={mode.title}
-                icon={mode.icon}
-                disabled={mode.disabled}
-                onClick={() => !mode.disabled && onModeSelect(mode.id)}
-              />
-            ))}
-          </div>
-
-          {/* Display Random Message and Icon */}
-          <div className="flex flex-col items-center gap-4 mt-12">
-            <Smile size={48} className="text-yellow-400" />
-            {randomMessage && (
-              <p className="text-xl sm:text-2xl text-gray-200 text-center font-semibold max-w-2xl">
-                {randomMessage}
-              </p>
-            )}
-          </div>
+    <div className="min-h-screen md:h-screen md:overflow-hidden bg-transparent text-gray-100 flex flex-col p-4 justify-center">
+      <div className="container mx-auto flex-grow flex flex-col items-center justify-center gap-6 md:gap-8 py-4">
+        <div className="text-center">
+          <motion.h1 
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.5, type: "spring" }}
+            className="text-4xl md:text-6xl font-extrabold text-yellow-400 text-center glow-accent tracking-wider uppercase"
+          >
+            Super Tic Tac Toe
+          </motion.h1>
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 0.6 }}
+            transition={{ delay: 0.2 }}
+            className="text-sm md:text-base text-gray-400 mt-2 tracking-wide font-medium"
+          >
+            A Strategic Multi-Layered Chess-like Duel
+          </motion.p>
         </div>
+
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1, duration: 0.4 }}
+          className="grid grid-cols-2 gap-6 sm:gap-8 w-full max-w-3xl justify-items-center mt-4"
+        >
+          {modes.map((mode) => (
+            <GameMode
+              key={mode.id}
+              title={mode.title}
+              icon={mode.icon}
+              disabled={mode.disabled}
+              onClick={() => !mode.disabled && onModeSelect(mode.id)}
+            />
+          ))}
+        </motion.div>
+
+        {/* Display Random Message and Icon - Mobile only */}
+        {randomMessage && (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.3, duration: 0.3 }}
+            className="flex md:hidden flex-col items-center gap-3 mt-8 glass-panel px-6 py-4 rounded-2xl border border-white/5 max-w-2xl shadow-lg"
+          >
+            <Smile size={32} className="text-yellow-400 animate-bounce" />
+            <p className="text-base sm:text-lg text-gray-200 text-center font-medium leading-relaxed italic">
+              &ldquo;{randomMessage}&rdquo;
+            </p>
+          </motion.div>
+        )}
       </div>
     </div>
   );
@@ -123,9 +158,9 @@ interface BackToMenuButtonProps {
 const BackToMenuButton = ({ onClick }: BackToMenuButtonProps) => (
   <button
     onClick={onClick}
-    className="absolute top-4 left-4 p-2 text-gray-400 hover:text-yellow-400 transition-colors duration-200"
+    className="absolute top-4 left-4 p-2 text-gray-400 hover:text-yellow-400 transition-colors duration-200 z-50 cursor-pointer"
   >
-    <ArrowLeftCircle size={24} />
+    <ArrowLeftCircle size={28} className="drop-shadow-[0_0_8px_rgba(0,0,0,0.5)]" />
   </button>
 );
 

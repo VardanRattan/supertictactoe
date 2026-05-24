@@ -1297,6 +1297,11 @@ const EnhancedAIEngine = {
         else if ([0, 2, 6, 8].includes(move.cell)) weight += dw.CORNER_VALUE;
         else weight += dw.EDGE_VALUE;
       }
+
+      // Inject Phase-Specific Local Move Weights (Activating your designed Phase Strategy!)
+      const phaseMoveWeight = PhaseManager.evaluatePhaseMove(gameState, move);
+      weight += phaseMoveWeight;
+
       if (options.includePattern !== false) {
         const patterns = StrategicPatternAnalyzer.analyzePatterns(gameState);
         if (patterns.size > 0) weight += StrategicPatternAnalyzer.WEIGHTS.PATTERN_COMPLETION * (patterns.size / 3);
@@ -1508,7 +1513,13 @@ const EnhancedAIEngine = {
   }
 };
 
+let searchDeadline = 0;
+
 const enhancedMinimax = (gameState: GameState, depth: number, alpha: number, beta: number, isMaximizing: boolean, maximizingPlayer: string): { score: number; move: Move | null } => {
+  if (Date.now() > searchDeadline) {
+    throw new Error("Search timeout exceeded");
+  }
+
   const cached = MinimaxOptimizer.getCachedEvaluation(gameState, depth);
   if (cached) return { score: cached.score, move: cached.move };
 
@@ -1543,6 +1554,7 @@ const enhancedMinimax = (gameState: GameState, depth: number, alpha: number, bet
 
 const iterativeDeepening = (gameState: GameState, timeLimit: number, maximizingPlayer: string) => {
   const startTime = Date.now();
+  searchDeadline = startTime + timeLimit;
   let bestMove = null;
   let currentDepth = 1;
   const validMoves = EnhancedAIEngine.getValidMoves(gameState);
