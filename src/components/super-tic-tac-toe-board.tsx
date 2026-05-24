@@ -59,12 +59,17 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     gameHistory: []
   });
 
+  const [confettiTrigger, setConfettiTrigger] = useState(0);
+
   useImperativeHandle(ref, () => ({
     makeMove: (gameIndex: number, cellIndex: number) => {
       handleClick(gameIndex, cellIndex);
     },
     resetGame: () => {
       handleNewGame();
+    },
+    loadGameState: (state: GameState) => {
+      setGameState(state);
     }
   }));
 
@@ -106,6 +111,11 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
 
   const playSound = useCallback((soundName: 'moveO' | 'moveX' | 'win' | 'superWin' | 'error') => {
     if (!audioPlayersRef.current) return;
+    // Check if muted inside localStorage
+    if (typeof window !== 'undefined') {
+      const isMuted = localStorage.getItem("sttt_mute") === "true";
+      if (isMuted) return; // Mute bypass!
+    }
     try {
       const audio = audioPlayersRef.current[soundName];
       if (audio) {
@@ -281,6 +291,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
       if (!gameState.gameOwnership[gameIndex]) {
         nextGameOwnership[gameIndex] = winResult.winner;
         playSound('win');
+        setConfettiTrigger(prev => prev + 1);
       }
     }
 
@@ -298,6 +309,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
         gameHistory: finalHistory
       });
       playSound('superWin');
+      setConfettiTrigger(prev => prev + 1);
       return;
     }
 
@@ -438,7 +450,8 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
   };
 
   return (
-    <div className={`min-h-screen ${colors.background} text-gray-100 flex flex-col p-2 md:p-4`}>
+    <div className={`min-h-screen ${colors.background} text-gray-100 flex flex-col p-2 md:p-4 relative`}>
+      <ConfettiCelebration trigger={confettiTrigger} />
       <div className="container mx-auto flex flex-col gap-4 flex-1 justify-center py-6">
         <div className="text-center mb-2">
           <motion.h1 
@@ -581,3 +594,69 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
 SuperTicTacToe.displayName = 'SuperTicTacToe';
 
 export default SuperTicTacToe;
+
+// --- Confetti Celebration Component ---
+interface Particle {
+  id: number;
+  x: number;
+  y: number;
+  color: string;
+  size: number;
+  rotate: number;
+}
+
+const ConfettiCelebration = ({ trigger }: { trigger: number }) => {
+  const [particles, setParticles] = useState<Particle[]>([]);
+
+  useEffect(() => {
+    if (trigger === 0) return;
+
+    const colors = ['#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#8b5cf6', '#ef4444'];
+    const newParticles: Particle[] = Array.from({ length: 45 }).map((_, i) => ({
+      id: Date.now() + i,
+      x: (Math.random() - 0.5) * 500, // horizontal spread
+      y: -Math.random() * 400 - 150,  // upward launch
+      color: colors[Math.floor(Math.random() * colors.length)],
+      size: Math.random() * 8 + 6,
+      rotate: Math.random() * 360
+    }));
+
+    setParticles(newParticles);
+
+    const timer = setTimeout(() => {
+      setParticles([]);
+    }, 2500);
+
+    return () => clearTimeout(timer);
+  }, [trigger]);
+
+  return (
+    <div className="absolute inset-0 pointer-events-none z-50 overflow-hidden flex items-center justify-center">
+      <AnimatePresence>
+        {particles.map((p) => (
+          <motion.div
+            key={p.id}
+            initial={{ x: 0, y: 0, opacity: 1, scale: 1, rotate: 0 }}
+            animate={{
+              x: p.x,
+              y: p.y,
+              opacity: 0,
+              scale: 0.2,
+              rotate: p.rotate + 270,
+              transition: { duration: 2.2, ease: "easeOut" }
+            }}
+            exit={{ opacity: 0 }}
+            style={{
+              position: 'absolute',
+              width: p.size,
+              height: p.size,
+              backgroundColor: p.color,
+              borderRadius: Math.random() > 0.5 ? '50%' : '15%',
+              boxShadow: `0 0 6px ${p.color}`
+            }}
+          />
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+};

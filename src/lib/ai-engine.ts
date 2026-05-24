@@ -646,6 +646,86 @@ const StrategicPatternAnalyzer = {
         }
         break;
       }
+
+      case StrategicPatternAnalyzer.PATTERN_TYPES.EDGE_SQUEEZE: {
+        const edges = [1, 3, 5, 7];
+        edges.forEach(edge => {
+          if (gameState.gameOwnership[edge] === gameState.currentPlayer) {
+            analysis.strength += 150;
+            analysis.controlledPositions.add(edge);
+          } else if (!gameState.gameOwnership[edge]) {
+            const gameStrength = WinningAnalyzer.evaluateBoardStrength(
+              gameState.superBoard[edge],
+              gameState.currentPlayer!
+            );
+            if (gameStrength.winningThreats > 0) {
+              analysis.strength += 100;
+              analysis.moves.push({
+                game: edge,
+                priority: gameStrength.winningThreats,
+                type: 'edge-threat'
+              });
+            }
+          }
+        });
+        break;
+      }
+
+      case StrategicPatternAnalyzer.PATTERN_TYPES.FORK_SETUP: {
+        const winPatterns = AI_CONFIG.PATTERNS.WIN_PATTERNS;
+        const player = gameState.currentPlayer!;
+        
+        const patternOwnership = winPatterns.map(pattern => {
+          let ownedCount = 0;
+          let opponentOwnedCount = 0;
+          let openIndices: number[] = [];
+          
+          pattern.forEach(idx => {
+            if (gameState.gameOwnership[idx] === player) {
+              ownedCount++;
+            } else if (gameState.gameOwnership[idx] !== null) {
+              opponentOwnedCount++;
+            } else {
+              openIndices.push(idx);
+            }
+          });
+          
+          return { pattern, ownedCount, opponentOwnedCount, openIndices };
+        });
+        
+        const commonOpenGames = new Map<number, number>();
+        
+        for (let i = 0; i < patternOwnership.length; i++) {
+          const p1 = patternOwnership[i];
+          if (p1.ownedCount >= 1 && p1.opponentOwnedCount === 0 && p1.openIndices.length > 0) {
+            for (let j = i + 1; j < patternOwnership.length; j++) {
+              const p2 = patternOwnership[j];
+              if (p2.ownedCount >= 1 && p2.opponentOwnedCount === 0 && p2.openIndices.length > 0) {
+                const shared = p1.openIndices.find(idx => p2.openIndices.includes(idx));
+                if (shared !== undefined) {
+                  const score = (p1.ownedCount + p2.ownedCount) * 150;
+                  commonOpenGames.set(shared, (commonOpenGames.get(shared) || 0) + score);
+                }
+              }
+            }
+          }
+        }
+        
+        commonOpenGames.forEach((score, gameIdx) => {
+          analysis.strength = Math.max(analysis.strength, score);
+          const gameStrength = WinningAnalyzer.evaluateBoardStrength(
+            gameState.superBoard[gameIdx],
+            player
+          );
+          analysis.moves.push({
+            game: gameIdx,
+            priority: gameStrength.winningThreats * 1.5 + 2,
+            type: 'macro-fork'
+          });
+        });
+        break;
+      }
+
       default:
         return null;
     }
@@ -1302,6 +1382,19 @@ const EnhancedAIEngine = {
       const phaseMoveWeight = PhaseManager.evaluatePhaseMove(gameState, move);
       weight += phaseMoveWeight;
 
+      // Anti-Suicide Filter: Check if this move routes the opponent to a board where they have an immediate win
+      const opponent = gameState.currentPlayer === 'X' ? 'O' : 'X';
+      if (!gameState.gameOwnership[move.cell]) {
+        const nextBoard = gameState.superBoard[move.cell];
+        if (nextBoard.some(c => c === null)) {
+          const oStrength = WinningAnalyzer.evaluateBoardStrength(nextBoard, opponent);
+          if (oStrength.winningThreats > 0) {
+            // Apply heavy penalty for routing to opponent threat zones
+            weight += AI_CONFIG.WEIGHTS.BREAK_STRATEGY_PENALTY; // -600
+          }
+        }
+      }
+
       if (options.includePattern !== false) {
         const patterns = StrategicPatternAnalyzer.analyzePatterns(gameState);
         if (patterns.size > 0) weight += StrategicPatternAnalyzer.WEIGHTS.PATTERN_COMPLETION * (patterns.size / 3);
@@ -1432,6 +1525,41 @@ const EnhancedAIEngine = {
       score += (pStrength.winningThreats * 100 - oStrength.winningThreats * 100);
       if (gameState.gameOwnership[idx] === player) score += 500;
       if (gameState.gameOwnership[idx] === opponent) score -= 500;
+    });
+
+    // Draw-Forcing Tactics: Check if a drawn or highly contested board blocks an opponent's win line
+    AI_CONFIG.PATTERNS.WIN_PATTERNS.forEach(pattern => {
+      const [a, b, c] = pattern;
+      const ownership = [gameState.gameOwnership[a], gameState.gameOwnership[b], gameState.gameOwnership[c]];
+      const opponentCount = ownership.filter(owner => owner === opponent).length;
+      const nullCount = ownership.filter(owner => owner === null).length;
+      
+      if (opponentCount === 2 && nullCount === 1) {
+        const openIdx = pattern.find(idx => gameState.gameOwnership[idx] === null)!;
+        const openGame = gameState.superBoard[openIdx];
+        const isFilled = openGame.every(cell => cell !== null);
+        
+        let hasWinner = false;
+        for (const line of AI_CONFIG.PATTERNS.WIN_PATTERNS) {
+          const [x, y, z] = line;
+          if (openGame[x] && openGame[x] === openGame[y] && openGame[x] === openGame[z]) {
+            hasWinner = true;
+            break;
+          }
+        }
+
+        if (isFilled && !hasWinner) {
+          score += 1500; // Major positional reward for forcing a draw on this critical blocker board
+        } else if (!isFilled) {
+          const oStrength = WinningAnalyzer.evaluateBoardStrength(openGame, opponent);
+          const pStrength = WinningAnalyzer.evaluateBoardStrength(openGame, player);
+          const emptyCells = openGame.filter(c => c === null).length;
+          
+          if (emptyCells <= 3 && oStrength.winningThreats === 0 && pStrength.winningThreats === 0) {
+            score += 500; // Strategic encouragement reward
+          }
+        }
+      }
     });
 
     // 2. Routing Destination Scoring (Critical Bug Fix #3 - Refined Perspective)

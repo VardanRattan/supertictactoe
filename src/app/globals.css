@@ -216,3 +216,103 @@
     border-color: rgba(234, 179, 8, 0.95);
   }
 }
+
+/* --- THEME CUSTOMIZATION --- */
+
+.theme-space {
+  --theme-bg: oklch(0.08 0.01 240);
+  --theme-o-color: #22d3ee;
+  --theme-x-color: #ef4444;
+  --theme-accent-color: #eab308;
+  --theme-grid-opacity: 0.05;
+}
+
+/* Cyberpunk Theme */
+.theme-cyberpunk {
+  background-color: #030008 !important;
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(255, 0, 128, 0.2) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(0, 255, 255, 0.15) 0px, transparent 50%),
+    radial-gradient(at 50% 50%, rgba(128, 0, 255, 0.1) 0px, transparent 60%) !important;
+}
+.theme-cyberpunk .glow-o {
+  color: #00ffff !important;
+  text-shadow: 0 0 10px rgba(0, 255, 255, 0.8), 0 0 20px rgba(0, 255, 255, 0.4) !important;
+}
+.theme-cyberpunk .glow-x {
+  color: #ff007f !important;
+  text-shadow: 0 0 10px rgba(255, 0, 127, 0.8), 0 0 20px rgba(255, 0, 127, 0.4) !important;
+}
+.theme-cyberpunk .glass-panel {
+  background: rgba(8, 2, 16, 0.7) !important;
+  border-color: rgba(255, 0, 127, 0.15) !important;
+  box-shadow: 0 0 15px rgba(255, 0, 127, 0.05) !important;
+}
+.theme-cyberpunk .glass-card {
+  background: rgba(16, 4, 32, 0.4) !important;
+  border-color: rgba(0, 255, 255, 0.1) !important;
+}
+.theme-cyberpunk .neon-active-grid {
+  border-color: #ff007f !important;
+  box-shadow: 0 0 15px rgba(255, 0, 127, 0.5), inset 0 0 10px rgba(255, 0, 127, 0.2) !important;
+}
+
+/* Retro Wood Theme */
+.theme-wood {
+  background-color: #2b1810 !important;
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(139, 90, 43, 0.25) 0px, transparent 55%),
+    radial-gradient(at 100% 100%, rgba(84, 46, 22, 0.2) 0px, transparent 50%) !important;
+}
+.theme-wood .glow-o {
+  color: #8fbc8f !important; /* Olive green */
+  text-shadow: 0 0 5px rgba(143, 188, 143, 0.5) !important;
+}
+.theme-wood .glow-x {
+  color: #cd853f !important; /* Brass/Peru */
+  text-shadow: 0 0 5px rgba(205, 133, 63, 0.5) !important;
+}
+.theme-wood .glass-panel {
+  background: rgba(43, 24, 16, 0.75) !important;
+  border-color: rgba(139, 90, 43, 0.25) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
+}
+.theme-wood .glass-card {
+  background: rgba(58, 33, 22, 0.4) !important;
+  border-color: rgba(139, 90, 43, 0.15) !important;
+}
+.theme-wood .neon-active-grid {
+  border-color: #cd853f !important;
+  box-shadow: 0 0 15px rgba(205, 133, 63, 0.4), inset 0 0 8px rgba(205, 133, 63, 0.2) !important;
+}
+
+/* Chalkboard Theme */
+.theme-chalkboard {
+  background-color: #1e2d24 !important; /* Chalkboard green */
+  background-image: 
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.02) 0%, rgba(0, 0, 0, 0.3) 100%) !important;
+}
+.theme-chalkboard .glow-o {
+  color: #f5f5f5 !important;
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.3), 0 0 4px rgba(255, 255, 255, 0.1) !important;
+  font-family: 'Courier New', Courier, monospace !important;
+}
+.theme-chalkboard .glow-x {
+  color: #eaeaea !important;
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.3), 0 0 4px rgba(255, 255, 255, 0.1) !important;
+  font-family: 'Courier New', Courier, monospace !important;
+}
+.theme-chalkboard .glass-panel {
+  background: rgba(30, 45, 36, 0.8) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.3) !important;
+}
+.theme-chalkboard .glass-card {
+  background: rgba(20, 32, 25, 0.5) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+.theme-chalkboard .neon-active-grid {
+  border-color: #ffffff !important;
+  border-style: dashed !important;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.3) !important;
+}

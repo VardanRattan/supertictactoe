@@ -45,6 +45,14 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
   const [rematchRequestedByMe, setRematchRequestedByMe] = useState(false);
   const [rematchRequestedByOpponent, setRematchRequestedByOpponent] = useState(false);
   
+  // Custom Emotes & Chat State
+  const [opponentEmote, setOpponentEmote] = useState<string | null>(null);
+  const [opponentChat, setOpponentChat] = useState<string | null>(null);
+  const [myEmote, setMyEmote] = useState<string | null>(null);
+  const [myChat, setMyChat] = useState<string | null>(null);
+  const [chatInput, setChatInput] = useState('');
+  const [showEmoteMenu, setShowEmoteMenu] = useState(false);
+
   // Network and Game refs
   const peerRef = useRef<any>(null);
   const connRef = useRef<any>(null);
@@ -61,6 +69,7 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
   // Refs to tracking dynamic state variables inside async loops to prevent stale closures
   const battleStateRef = useRef<BattleState>('IDLE');
   const myRoleRef = useRef<'X' | 'O' | null>(null);
+  const roomCodeRef = useRef('');
 
   // Unified state setter helpers that sync refs
   const updateBattleState = (state: BattleState) => {
@@ -71,6 +80,11 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
   const updateMyRole = (role: 'X' | 'O' | null) => {
     setMyRole(role);
     myRoleRef.current = role;
+  };
+
+  const updateRoomCode = (code: string) => {
+    setRoomCode(code);
+    roomCodeRef.current = code;
   };
 
   // Generate unique room code
@@ -127,6 +141,14 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
   const cleanup = useCallback(() => {
     if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
     if (reconnectIntervalRef.current) clearInterval(reconnectIntervalRef.current);
+
+    const activeCode = roomCodeRef.current;
+    if (activeCode) {
+      try {
+        localStorage.removeItem(`sttt_battle_state_${activeCode}`);
+      } catch (e) {}
+    }
+
     if (connRef.current) {
       try { connRef.current.close(); } catch (e) {}
       connRef.current = null;
@@ -139,6 +161,10 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
     ignoreNextMoveFromStateChange.current = false;
     setRematchRequestedByMe(false);
     setRematchRequestedByOpponent(false);
+    setOpponentEmote(null);
+    setOpponentChat(null);
+    setMyEmote(null);
+    setMyChat(null);
   }, []);
 
   useEffect(() => {
@@ -167,6 +193,20 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
           username: 'Host'
         });
 
+        // Handshake State Sync: If we have a cached state for this room, send it to the reconnecting peer
+        const activeCode = roomCodeRef.current;
+        if (activeCode) {
+          try {
+            const cachedSync = localStorage.getItem(`sttt_battle_state_${activeCode}`);
+            if (cachedSync) {
+              connection.send({
+                type: 'STATE_SYNC',
+                gameState: JSON.parse(cachedSync)
+              });
+            }
+          } catch (e) {}
+        }
+
         updateBattleState('COUNTDOWN');
         startCountdown();
       }
@@ -183,6 +223,30 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
             updateBattleState('COUNTDOWN');
             startCountdown();
           }
+          break;
+
+        case 'STATE_SYNC':
+          if (data.gameState && gameRef.current) {
+            try {
+              (gameRef.current as any).loadGameState(data.gameState);
+              setCurrentPlayer(data.gameState.currentPlayer);
+              setSuperWinner(data.gameState.superWinner);
+            } catch (e) {
+              console.error("Failed to restore synchronized game state:", e);
+            }
+          }
+          break;
+
+        case 'EMOTE':
+          setOpponentEmote(data.emote);
+          playSound('moveO');
+          setTimeout(() => setOpponentEmote(null), 2500);
+          break;
+
+        case 'CHAT':
+          setOpponentChat(data.text);
+          playSound('win');
+          setTimeout(() => setOpponentChat(null), 4000);
           break;
 
         case 'MOVE':
@@ -278,6 +342,15 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
         if (connRef.current && connRef.current.open && Date.now() - lastPongTime.current < 8000) {
           clearInterval(reconnectIntervalRef.current!);
           updateBattleState('PLAYING');
+
+          if (latestGameState.current && connRef.current && connRef.current.open) {
+            try {
+              connRef.current.send({
+                type: 'STATE_SYNC',
+                gameState: latestGameState.current
+              });
+            } catch (e) {}
+          }
           return 30;
         }
 
@@ -299,7 +372,7 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
     setErrorMessage('');
     
     const code = generateRoomCode();
-    setRoomCode(code);
+    updateRoomCode(code);
     isHost.current = true;
 
     initPeer(code).then(peer => {
@@ -325,6 +398,7 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
     updateBattleState('JOINING_PEER');
     setErrorMessage('');
     isHost.current = false;
+    updateRoomCode(inputCode.toUpperCase());
 
     initPeer(null).then(peer => {
       if (!peer) return;
@@ -350,6 +424,30 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
     navigator.clipboard.writeText(roomCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Quick Match Matchmaking lookup
+
+  // Custom P2P Emote sender
+  const sendEmote = (emote: string) => {
+    if (!connRef.current || !connRef.current.open) return;
+    try {
+      connRef.current.send({ type: 'EMOTE', emote });
+      setMyEmote(emote);
+      setTimeout(() => setMyEmote(null), 2500);
+    } catch (e) {}
+  };
+
+  // Custom P2P Chat sender
+  const sendChat = (text: string) => {
+    if (!text.trim() || !connRef.current || !connRef.current.open) return;
+    try {
+      const sanitizedText = text.trim().slice(0, 35);
+      connRef.current.send({ type: 'CHAT', text: sanitizedText });
+      setMyChat(sanitizedText);
+      setChatInput('');
+      setTimeout(() => setMyChat(null), 4000);
+    } catch (e) {}
   };
 
   // Trigger Rematch Event
@@ -384,6 +482,10 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
 
   // Trigger sound indicator safely
   const playSound = (soundName: 'moveO' | 'moveX' | 'win' | 'superWin' | 'error') => {
+    if (typeof window !== 'undefined') {
+      const isMuted = localStorage.getItem("sttt_mute") === "true";
+      if (isMuted) return;
+    }
     try {
       const prefix = process.env.NODE_ENV === 'production' ? '/supertictactoe' : '';
       const audio = new Audio(`${prefix}/sounds/${soundName}.mp3`);
@@ -397,6 +499,16 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
     latestGameState.current = state;
     setCurrentPlayer(state.currentPlayer);
     setSuperWinner(state.superWinner);
+
+    // Save game state locally for reconnection sync
+    const activeCode = roomCodeRef.current;
+    if (activeCode) {
+      if (state.gameStarted && !state.superWinner) {
+        localStorage.setItem(`sttt_battle_state_${activeCode}`, JSON.stringify(state));
+      } else {
+        localStorage.removeItem(`sttt_battle_state_${activeCode}`);
+      }
+    }
 
     // Send local moves to the peer
     if (state.lastMove && state.currentPlayer !== myRoleRef.current) {
@@ -640,6 +752,40 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
               </div>
             )}
 
+            {/* My Chat/Emote Bubble */}
+            <AnimatePresence>
+              {(myEmote || myChat) && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.8, y: 10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  className="absolute bottom-24 right-4 z-40 glass-panel border border-yellow-500/20 px-4 py-2 rounded-2xl shadow-xl flex items-center gap-2 max-w-[200px]"
+                >
+                  <div className="size-2 bg-yellow-400 rounded-full"></div>
+                  <span className="text-sm font-semibold text-yellow-300">
+                    {myEmote ? <span className="text-2xl">{myEmote}</span> : myChat}
+                  </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Opponent Chat/Emote Bubble */}
+            <AnimatePresence>
+              {(opponentEmote || opponentChat) && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.8, y: -10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  className="absolute top-16 left-4 z-40 glass-panel border border-cyan-500/20 px-4 py-2 rounded-2xl shadow-xl flex items-center gap-2 max-w-[200px]"
+                >
+                  <div className="size-2 bg-cyan-400 rounded-full"></div>
+                  <span className="text-sm font-semibold text-cyan-300">
+                    {opponentEmote ? <span className="text-2xl">{opponentEmote}</span> : opponentChat}
+                  </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             <SuperTicTacToeBoard
               ref={gameRef}
               mode={mode}
@@ -648,6 +794,59 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
               onNewGameRequest={onNewGameRequest}
               isProcessing={currentPlayer !== myRole} // Blocks clicking out of turn! (AI wrapper design)
             />
+
+            {/* Emote & Chat Controller */}
+            <div className="absolute bottom-4 left-4 z-50 flex items-center gap-2">
+              <button
+                onClick={() => setShowEmoteMenu(!showEmoteMenu)}
+                className="p-2.5 rounded-full glass-panel border border-white/5 hover:border-yellow-500/30 text-yellow-400 shadow-lg transition-all duration-200 cursor-pointer text-lg"
+                title="Send Emote"
+              >
+                😀
+              </button>
+
+              <div className="flex items-center glass-panel border border-white/5 rounded-full px-3 py-1 shadow-lg max-w-[180px] sm:max-w-[220px]">
+                <input
+                  type="text"
+                  maxLength={30}
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Say something..."
+                  className="w-full bg-transparent border-none outline-none text-xs font-medium text-gray-200 placeholder:text-gray-500"
+                  onKeyDown={(e) => e.key === 'Enter' && sendChat(chatInput)}
+                />
+                <button
+                  onClick={() => sendChat(chatInput)}
+                  className="text-xs font-bold text-yellow-400 hover:text-yellow-300 transition-colors ml-1 cursor-pointer"
+                >
+                  Send
+                </button>
+              </div>
+
+              <AnimatePresence>
+                {showEmoteMenu && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                    className="absolute bottom-16 left-0 glass-panel border border-white/10 p-2.5 rounded-2xl grid grid-cols-4 gap-2 shadow-2xl z-50 min-w-[140px]"
+                  >
+                    {['😀', '🔥', '👑', '😮', '🤡', '👏', '🧠', '💥'].map((emo) => (
+                      <button
+                        key={emo}
+                        onClick={() => {
+                          sendEmote(emo);
+                          setShowEmoteMenu(false);
+                        }}
+                        className="text-2xl hover:scale-125 transition-transform duration-200 cursor-pointer"
+                      >
+                        {emo}
+                      </button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
 
             {/* In-Game Rematch overlay if Super Winner is declared */}
             {superWinner && (
