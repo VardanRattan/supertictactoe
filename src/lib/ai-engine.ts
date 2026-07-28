@@ -148,7 +148,7 @@ const AI_CONFIG = {
     EARLY_GAME: { CORNER_VALUE: 250, CENTER_VALUE: 350, EDGE_VALUE: 180, CONNECTIVITY: 300, BLOCKING: 250 },
     MID_GAME: { CORNER_VALUE: 300, CENTER_VALUE: 400, EDGE_VALUE: 200, CONNECTIVITY: 450, BLOCKING: 500 },
     LATE_GAME: { CORNER_VALUE: 400, CENTER_VALUE: 500, EDGE_VALUE: 300, CONNECTIVITY: 600, BLOCKING: 700 }
-  } as Record<string, any>
+  } as Record<string, { CORNER_VALUE: number; CENTER_VALUE: number; EDGE_VALUE: number; CONNECTIVITY: number; BLOCKING: number }>
 };
 
 // --- Pattern Cache ---
@@ -334,7 +334,7 @@ const WinningAnalyzer = {
     }
 
     let score = 0;
-    const gameStage = PhaseManager.getGameStage({ superBoard: [board] } as any);
+    const gameStage = PhaseManager.getGameStage({ superBoard: [board] } as unknown as GameState);
     const phaseMultiplier = WinningAnalyzer.WEIGHTS.PHASE_MULTIPLIERS[gameStage] || 1;
     
     const emptySpots = board.map((cell, index) => cell === null ? index : -1)
@@ -507,7 +507,7 @@ const StrategicPatternAnalyzer = {
 
   state: {
     activePatterns: new Set<string>(),
-    patternHistory: [] as any[],
+    patternHistory: [] as unknown[],
     patternStrengths: new Map<string, number>()
   },
 
@@ -678,7 +678,7 @@ const StrategicPatternAnalyzer = {
         const patternOwnership = winPatterns.map(pattern => {
           let ownedCount = 0;
           let opponentOwnedCount = 0;
-          let openIndices: number[] = [];
+          const openIndices: number[] = [];
           
           pattern.forEach(idx => {
             if (gameState.gameOwnership[idx] === player) {
@@ -1087,7 +1087,7 @@ const PhaseManager = {
 
   state: {
     currentPhase: null as string | null,
-    phaseHistory: [] as any[],
+    phaseHistory: [] as { from: string | null; to: string; timestamp: number }[],
     strategicTargets: new Set<number>(),
     phaseStartTime: null as number | null
   },
@@ -1208,8 +1208,9 @@ const PhaseManager = {
             .identifyControlTargets(gameState, metrics))
         };
       },
-      identifyControlTargets: (gameState: GameState, _metrics: any) => {
-        const targets: any[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      identifyControlTargets: (gameState: GameState, _metrics: Record<string, unknown>) => {
+        const targets: { index: number; priority: number }[] = [];
         gameState.superBoard.forEach((game, index) => {
           if (!gameState.gameOwnership[index]) {
             const strength = WinningAnalyzer.evaluateBoardStrength(game, gameState.currentPlayer!);
@@ -1242,7 +1243,7 @@ const PhaseManager = {
         };
       },
       selectSacrificeGames: (gameState: GameState) => {
-        const candidates: any[] = [];
+        const candidates: { index: number; value: number }[] = [];
         gameState.superBoard.forEach((game, index) => {
           if (!gameState.gameOwnership[index]) {
             const strength = WinningAnalyzer.evaluateBoardStrength(game, gameState.currentPlayer!);
@@ -1292,7 +1293,8 @@ const PhaseManager = {
         return score;
       }
     }
-  } as Record<string, any>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as Record<string, Record<string, (...args: any[]) => any>>,
 
   transitionToPhase: (newPhase: string, gameState: GameState) => {
     if (newPhase === PhaseManager.state.currentPhase) return;
@@ -1695,7 +1697,7 @@ const iterativeDeepening = (gameState: GameState, timeLimit: number, maximizingP
       const result = enhancedMinimax(gameState, currentDepth, -Infinity, Infinity, true, maximizingPlayer);
       if (result.move) bestMove = result.move;
       currentDepth++;
-    } catch (_error) { break; }
+    } catch { break; }
   }
   return bestMove || validMoves[0];
 };

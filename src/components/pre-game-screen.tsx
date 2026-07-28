@@ -93,7 +93,7 @@ const PreGameScreen = ({ gameMode, onStartGame }: PreGameScreenProps) => {
             <ul className="list-disc list-inside space-y-2 ml-1 text-sm md:text-base leading-relaxed">
               <li>Win individual sub-boards by connecting three of your marks within that sub-board.</li>
               <li>Once a sub-board is won, it belongs to that player permanently.</li>
-              <li>*Note:* You can still be sent to an already won sub-board; playing inside it still directs your opponent's next move.</li>
+              <li>*Note:* You can still be sent to an already won sub-board; playing inside it still directs your opponent&apos;s next move.</li>
             </ul>
           </motion.section>
 

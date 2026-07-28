@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Settings, Volume2, VolumeX, Palette, X } from "lucide-react";
 import MainMenu, { BackToMenuButton } from "@/components/main-menu";
@@ -20,19 +20,15 @@ const pageVariants = {
 export default function Home() {
   const [appState, setAppState] = useState<AppState>("MENU");
   const [gameMode, setGameMode] = useState<string | null>(null);
-  const [activeTheme, setActiveTheme] = useState<string>("space");
-  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [activeTheme, setActiveTheme] = useState<string>(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("sttt_theme") || "space";
+    return "space";
+  });
+  const [isMuted, setIsMuted] = useState<boolean>(() => {
+    if (typeof window !== "undefined") return localStorage.getItem("sttt_mute") === "true";
+    return false;
+  });
   const [showSettings, setShowSettings] = useState<boolean>(false);
-
-  // Sync settings with localStorage on mount
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const savedTheme = localStorage.getItem("sttt_theme") || "space";
-      const savedMute = localStorage.getItem("sttt_mute") === "true";
-      setActiveTheme(savedTheme);
-      setIsMuted(savedMute);
-    }
-  }, []);
 
   const handleModeSelect = (mode: string) => {
     setGameMode(mode);

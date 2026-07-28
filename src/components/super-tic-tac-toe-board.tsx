@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback, forwardRef, useImperativeHandle, useRef } from 'react';
+import React, { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const WINNING_LINES = [
@@ -24,6 +24,7 @@ export interface GameState {
 export interface SuperTicTacToeHandle {
   makeMove: (gameIndex: number, cellIndex: number) => void;
   resetGame: () => void;
+  loadGameState: (state: GameState) => void;
 }
 
 interface SuperTicTacToeProps {
@@ -60,18 +61,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
   });
 
   const [confettiTrigger, setConfettiTrigger] = useState(0);
-
-  useImperativeHandle(ref, () => ({
-    makeMove: (gameIndex: number, cellIndex: number) => {
-      handleClick(gameIndex, cellIndex);
-    },
-    resetGame: () => {
-      handleNewGame();
-    },
-    loadGameState: (state: GameState) => {
-      setGameState(state);
-    }
-  }));
+  const lastEmittedStateRef = useRef<GameState | null>(null);
 
   // Set page title and meta description for SEO
   useEffect(() => {
@@ -127,26 +117,12 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     }
   }, []);
 
-  const currentGameState = useMemo(() => ({
-    superBoard: gameState.superBoard,
-    currentPlayer: gameState.currentPlayer,
-    activeGame: gameState.activeGame,
-    gameOwnership: gameState.gameOwnership,
-    superWinner: gameState.superWinner,
-    lastMove: gameState.lastMove,
-    gameStarted: gameState.gameStarted,
-    previousGame: gameState.previousGame,
-    gameHistory: gameState.gameHistory
-  }), [gameState]);
-
   useEffect(() => {
-    if (!gameState.gameStarted) return;
-
-    // Notify parent of state changes
-    if (onGameStateChange) {
-      onGameStateChange(currentGameState);
-    }
-  }, [gameState.gameStarted, currentGameState, onGameStateChange]);
+    if (!gameState.gameStarted || !onGameStateChange) return;
+    if (lastEmittedStateRef.current === gameState) return;
+    lastEmittedStateRef.current = gameState;
+    onGameStateChange(gameState);
+  }, [gameState, onGameStateChange]);
 
   // Check for super winner
   const checkSuperWin = (ownership: (string | null)[]) => {
@@ -195,9 +171,10 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     return board.every(game => isGameFilled(game));
   };
 
-  const findValidGame = (targetGame: number | null, currentSuperBoard: (string | null)[][], fallbackGame: number | null = null, currentHistory: number[] = []): number | null => {
+  const findValidGame = (targetGame: number | null, currentSuperBoard: (string | null)[][], fallbackGame: number | null = null, currentHistory: number[] = [], currentOwnership: (string | null)[] = []): number | null => {
     const isGamePlayable = (gameIdx: number | null): boolean => {
       if (gameIdx === null) return false;
+      if (currentOwnership[gameIdx]) return false;
       return currentSuperBoard[gameIdx].some(cell => cell === null);
     };
 
@@ -267,6 +244,8 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
   const handleClick = (gameIndex: number, cellIndex: number) => {
     if (!gameState.gameStarted || gameState.superWinner) return;
 
+    if (gameState.gameOwnership[gameIndex]) return;
+
     if (gameState.activeGame !== null && gameState.activeGame !== gameIndex) {
       playSound('error');
       return;
@@ -286,7 +265,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     playSound(gameState.currentPlayer === 'O' ? 'moveO' : 'moveX');
 
     const winResult = checkWin(newSuperBoard[gameIndex]);
-    let nextGameOwnership = [...gameState.gameOwnership];
+    const nextGameOwnership = [...gameState.gameOwnership];
     if (winResult) {
       if (!gameState.gameOwnership[gameIndex]) {
         nextGameOwnership[gameIndex] = winResult.winner;
@@ -325,12 +304,12 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
         previousGame: gameIndex,
         gameHistory: finalHistory
       });
-      playSound('error');
+      playSound('win');
       return;
     }
 
     const nextPlayer = gameState.currentPlayer === 'O' ? 'X' : 'O';
-    const nextGame = findValidGame(cellIndex, newSuperBoard, gameIndex, finalHistory);
+    const nextGame = findValidGame(cellIndex, newSuperBoard, gameIndex, finalHistory, nextGameOwnership);
 
     if (nextGame === null) {
       const anyPlayableGame = Array.from({length: 9}).some((_, idx) => 
@@ -349,10 +328,10 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
           previousGame: gameIndex,
           gameHistory: finalHistory
         });
-        playSound('error');
+        playSound('win');
         return;
       } else {
-        const safetyGame = findValidGame(null, newSuperBoard, gameIndex, finalHistory);
+        const safetyGame = findValidGame(null, newSuperBoard, gameIndex, finalHistory, nextGameOwnership);
         setGameState({
           superBoard: newSuperBoard,
           currentPlayer: nextPlayer,
@@ -381,34 +360,56 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     });
   };
 
-  const renderCell = (gameIndex: number, cellIndex: number, value: string | null, isZoomed = false) => {
-    const isPlayable = gameState.gameStarted && (gameState.activeGame === null || gameState.activeGame === gameIndex);
+  useImperativeHandle(ref, () => ({
+    makeMove: (gameIndex: number, cellIndex: number) => {
+      handleClick(gameIndex, cellIndex);
+    },
+    resetGame: () => {
+      handleNewGame();
+    },
+    loadGameState: (state: GameState) => {
+      setGameState(state);
+    }
+  }));
+
+  const renderCell = (gameIndex: number, cellIndex: number, value: string | null, isZoomed = false, isOwned = false) => {
+    const isPlayable = !isOwned && gameState.gameStarted && (gameState.activeGame === null || gameState.activeGame === gameIndex);
     const isLastMove = gameState.lastMove?.game === gameIndex && gameState.lastMove?.cell === cellIndex;
+
+    const cellClasses = `
+      w-full h-full flex items-center justify-center
+      ${colors.cell} ${isPlayable && !gameState.superWinner ? colors.cellHover : ''}
+      ${isLastMove ? 'scale-105 ring-2 ring-yellow-400/80 shadow-[0_0_10px_rgba(234,179,8,0.3)]' : 'scale-100'}
+      ${isZoomed ? 'text-6xl md:text-7xl' : 'text-2xl sm:text-3xl md:text-4xl'} font-bold
+      shadow-md transition-all duration-300
+    `;
+
+    const content = (
+      <AnimatePresence mode="popLayout">
+        {value && (
+          <motion.span
+            initial={{ scale: 0, rotate: -30, opacity: 0 }}
+            animate={{ scale: 1, rotate: 0, opacity: 1 }}
+            transition={{ type: "spring", stiffness: 300, damping: 18 }}
+            className={value === 'O' ? colors.playerO : colors.playerX}
+          >
+            {value}
+          </motion.span>
+        )}
+      </AnimatePresence>
+    );
+
+    if (isOwned) {
+      return <div className={cellClasses}>{content}</div>;
+    }
 
     return (
       <button
-        className={`
-          w-full h-full flex items-center justify-center
-          ${colors.cell} ${isPlayable && !gameState.superWinner ? colors.cellHover : ''}
-          ${isLastMove ? 'scale-105 ring-2 ring-yellow-400/80 shadow-[0_0_10px_rgba(234,179,8,0.3)]' : 'scale-100'}
-          ${isZoomed ? 'text-6xl md:text-7xl' : 'text-2xl sm:text-3xl md:text-4xl'} font-bold
-          shadow-md transition-all duration-300
-        `}
+        className={cellClasses}
         onClick={() => isPlayable && !gameState.superWinner ? handleClick(gameIndex, cellIndex) : null}
         disabled={!isPlayable || !!gameState.superWinner || isProcessing}
       >
-        <AnimatePresence mode="popLayout">
-          {value && (
-            <motion.span
-              initial={{ scale: 0, rotate: -30, opacity: 0 }}
-              animate={{ scale: 1, rotate: 0, opacity: 1 }}
-              transition={{ type: "spring", stiffness: 300, damping: 18 }}
-              className={value === 'O' ? colors.playerO : colors.playerX}
-            >
-              {value}
-            </motion.span>
-          )}
-        </AnimatePresence>
+        {content}
       </button>
     );
   };
@@ -441,7 +442,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
         <div className={`grid grid-cols-3 ${isZoomed ? 'gap-1.5' : 'gap-2'} h-full relative z-20`}>
           {game.map((cell, idx) => (
             <div key={idx} className="aspect-square">
-              {renderCell(gameIndex, idx, cell, isZoomed)}
+              {renderCell(gameIndex, idx, cell, isZoomed, !!owner)}
             </div>
           ))}
         </div>
@@ -603,28 +604,32 @@ interface Particle {
   color: string;
   size: number;
   rotate: number;
+  borderRadius: string;
 }
 
 const ConfettiCelebration = ({ trigger }: { trigger: number }) => {
-  const [particles, setParticles] = useState<Particle[]>([]);
+  const particlesRef = useRef<Particle[]>([]);
+  const [, setTick] = useState(0);
 
   useEffect(() => {
     if (trigger === 0) return;
 
     const colors = ['#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#8b5cf6', '#ef4444'];
-    const newParticles: Particle[] = Array.from({ length: 45 }).map((_, i) => ({
+    particlesRef.current = Array.from({ length: 45 }).map((_, i) => ({
       id: Date.now() + i,
-      x: (Math.random() - 0.5) * 500, // horizontal spread
-      y: -Math.random() * 400 - 150,  // upward launch
+      x: (Math.random() - 0.5) * 500,
+      y: -Math.random() * 400 - 150,
       color: colors[Math.floor(Math.random() * colors.length)],
       size: Math.random() * 8 + 6,
-      rotate: Math.random() * 360
+      rotate: Math.random() * 360,
+      borderRadius: Math.random() > 0.5 ? '50%' : '15%'
     }));
-
-    setParticles(newParticles);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTick(t => t + 1);
 
     const timer = setTimeout(() => {
-      setParticles([]);
+      particlesRef.current = [];
+      setTick(t => t + 1);
     }, 2500);
 
     return () => clearTimeout(timer);
@@ -633,7 +638,8 @@ const ConfettiCelebration = ({ trigger }: { trigger: number }) => {
   return (
     <div className="absolute inset-0 pointer-events-none z-50 overflow-hidden flex items-center justify-center">
       <AnimatePresence>
-        {particles.map((p) => (
+        {/* eslint-disable-next-line react-hooks/refs */}
+        {particlesRef.current.map((p) => (
           <motion.div
             key={p.id}
             initial={{ x: 0, y: 0, opacity: 1, scale: 1, rotate: 0 }}
@@ -651,7 +657,7 @@ const ConfettiCelebration = ({ trigger }: { trigger: number }) => {
               width: p.size,
               height: p.size,
               backgroundColor: p.color,
-              borderRadius: Math.random() > 0.5 ? '50%' : '15%',
+              borderRadius: p.borderRadius,
               boxShadow: `0 0 6px ${p.color}`
             }}
           />

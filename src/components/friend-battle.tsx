@@ -4,10 +4,22 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Copy, Check, Users, ShieldAlert, WifiOff, RefreshCw, ArrowLeft, Loader2 } from 'lucide-react';
 import SuperTicTacToeBoard, { SuperTicTacToeHandle, GameState } from './super-tic-tac-toe-board';
+import type { Peer, DataConnection } from 'peerjs';
 
 // Safe alphabet for room codes (excluding 0, O, 1, I)
 const ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-const OFFENSIVE_WORDS = ['FUCK', 'SHIT', 'CUNT', 'Bitch', 'SLUT', 'ASS', 'COCK', 'DICK'];
+const OFFENSIVE_WORDS = ['FUCK', 'SHIT', 'CUNT', 'BITCH', 'SLUT', 'ASS', 'COCK', 'DICK'];
+
+type BattleMessage =
+  | { type: 'HANDSHAKE'; roles: { host: 'X' | 'O'; guest: 'X' | 'O' }; username: string }
+  | { type: 'STATE_SYNC'; gameState: GameState }
+  | { type: 'EMOTE'; emote: string }
+  | { type: 'CHAT'; text: string }
+  | { type: 'MOVE'; game: number; cell: number }
+  | { type: 'REMATCH_REQUEST' }
+  | { type: 'REMATCH_ACCEPT' }
+  | { type: 'PING' }
+  | { type: 'PONG' };
 
 type BattleState = 
   | 'IDLE' 
@@ -30,7 +42,6 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
   const [roomCode, setRoomCode] = useState('');
   const [inputCode, setInputCode] = useState('');
   const [copied, setCopied] = useState(false);
-  const [hostRole, setHostRole] = useState<'X' | 'O' | null>(null);
   const [myRole, setMyRole] = useState<'X' | 'O' | null>(null);
   const [opponentUsername, setOpponentUsername] = useState('Opponent');
   const [countdown, setCountdown] = useState(3);
@@ -53,23 +64,31 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
   const [chatInput, setChatInput] = useState('');
   const [showEmoteMenu, setShowEmoteMenu] = useState(false);
 
+  // Rematch refs for stale closure prevention
+  const rematchRequestedByOpponentRef = useRef(false);
+  const rematchRequestedByMeRef = useRef(false);
+
   // Network and Game refs
-  const peerRef = useRef<any>(null);
-  const connRef = useRef<any>(null);
+  const peerRef = useRef<Peer | null>(null);
+  const connRef = useRef<DataConnection | null>(null);
   const gameRef = useRef<SuperTicTacToeHandle>(null);
   const isHost = useRef(false);
   const latestGameState = useRef<GameState | null>(null);
   const ignoreNextMoveFromStateChange = useRef(false);
 
   // Heartbeat tracking refs
-  const lastPongTime = useRef(Date.now());
+  const lastPongTime = useRef(0);
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Refs to tracking dynamic state variables inside async loops to prevent stale closures
   const battleStateRef = useRef<BattleState>('IDLE');
   const myRoleRef = useRef<'X' | 'O' | null>(null);
   const roomCodeRef = useRef('');
+  const hostRoleRef = useRef<'X' | 'O' | null>(null);
+  const connectedRef = useRef(false);
+  const joinTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Unified state setter helpers that sync refs
   const updateBattleState = (state: BattleState) => {
@@ -104,17 +123,14 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
     try {
       const { default: Peer } = await import('peerjs');
       
-      const peerId = customId ? `stt-${customId}` : undefined;
-      const peer = new Peer(peerId as any, {
-        host: '0.peerjs.com',
-        port: 443,
-        secure: true,
-        debug: 1 // Only log errors to keep console clean
-      });
+      const peer = customId
+        ? new Peer(`stt-${customId}`, { host: '0.peerjs.com', port: 443, secure: true, debug: 1 })
+        : new Peer({ host: '0.peerjs.com', port: 443, secure: true, debug: 1 });
 
       peerRef.current = peer;
 
-      peer.on('error', (err: any) => {
+      peer.on('error', (err) => {
+        if (battleStateRef.current === 'DISCONNECTED' || battleStateRef.current === 'IDLE') return;
         console.error('PeerJS error:', err);
         if (err.type === 'unavailable-id') {
           setErrorMessage('Room code already in use or unavailable.');
@@ -141,24 +157,30 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
   const cleanup = useCallback(() => {
     if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
     if (reconnectIntervalRef.current) clearInterval(reconnectIntervalRef.current);
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
 
     const activeCode = roomCodeRef.current;
     if (activeCode) {
       try {
         localStorage.removeItem(`sttt_battle_state_${activeCode}`);
-      } catch (e) {}
+      } catch {}
     }
 
     if (connRef.current) {
-      try { connRef.current.close(); } catch (e) {}
+      try { connRef.current.close(); } catch {}
       connRef.current = null;
     }
     if (peerRef.current) {
-      try { peerRef.current.destroy(); } catch (e) {}
+      try { peerRef.current.destroy(); } catch {}
       peerRef.current = null;
     }
     latestGameState.current = null;
     ignoreNextMoveFromStateChange.current = false;
+    connectedRef.current = false;
+    hostRoleRef.current = null;
+    rematchRequestedByMeRef.current = false;
+    rematchRequestedByOpponentRef.current = false;
     setRematchRequestedByMe(false);
     setRematchRequestedByOpponent(false);
     setOpponentEmote(null);
@@ -171,136 +193,15 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
     return () => cleanup();
   }, [cleanup]);
 
-  // Setup connection event listeners
-  const setupConnection = useCallback((connection: any) => {
-    connRef.current = connection;
-    lastPongTime.current = Date.now();
-
-    connection.on('open', () => {
-      // Connect successfully, handle host handshake
-      if (isHost.current) {
-        // Host randomly decides starting player
-        const roles = hostRole || (Math.random() > 0.5 ? 'X' : 'O');
-        const opponentRole = roles === 'X' ? 'O' : 'X';
-        updateMyRole(roles);
-        
-        connection.send({
-          type: 'HANDSHAKE',
-          roles: {
-            host: roles,
-            guest: opponentRole
-          },
-          username: 'Host'
-        });
-
-        // Handshake State Sync: If we have a cached state for this room, send it to the reconnecting peer
-        const activeCode = roomCodeRef.current;
-        if (activeCode) {
-          try {
-            const cachedSync = localStorage.getItem(`sttt_battle_state_${activeCode}`);
-            if (cachedSync) {
-              connection.send({
-                type: 'STATE_SYNC',
-                gameState: JSON.parse(cachedSync)
-              });
-            }
-          } catch (e) {}
-        }
-
-        updateBattleState('COUNTDOWN');
-        startCountdown();
-      }
-    });
-
-    connection.on('data', (data: any) => {
-      if (typeof data !== 'object' || !data.type) return;
-
-      switch (data.type) {
-        case 'HANDSHAKE':
-          if (!isHost.current) {
-            updateMyRole(data.roles.guest);
-            setOpponentUsername(data.username || 'Host');
-            updateBattleState('COUNTDOWN');
-            startCountdown();
-          }
-          break;
-
-        case 'STATE_SYNC':
-          if (data.gameState && gameRef.current) {
-            try {
-              (gameRef.current as any).loadGameState(data.gameState);
-              setCurrentPlayer(data.gameState.currentPlayer);
-              setSuperWinner(data.gameState.superWinner);
-            } catch (e) {
-              console.error("Failed to restore synchronized game state:", e);
-            }
-          }
-          break;
-
-        case 'EMOTE':
-          setOpponentEmote(data.emote);
-          playSound('moveO');
-          setTimeout(() => setOpponentEmote(null), 2500);
-          break;
-
-        case 'CHAT':
-          setOpponentChat(data.text);
-          playSound('win');
-          setTimeout(() => setOpponentChat(null), 4000);
-          break;
-
-        case 'MOVE':
-          if (gameRef.current) {
-            ignoreNextMoveFromStateChange.current = true;
-            gameRef.current.makeMove(data.game, data.cell);
-          }
-          break;
-
-        case 'REMATCH_REQUEST':
-          setRematchRequestedByOpponent(true);
-          playSound('moveO');
-          break;
-
-        case 'REMATCH_ACCEPT':
-          setRematchRequestedByMe(false);
-          setRematchRequestedByOpponent(false);
-          if (gameRef.current) {
-            gameRef.current.resetGame();
-          }
-          setCountdown(3);
-          updateBattleState('COUNTDOWN');
-          startCountdown();
-          break;
-
-        case 'PING':
-          try { connection.send({ type: 'PONG' }); } catch (e) {}
-          break;
-
-        case 'PONG':
-          lastPongTime.current = Date.now();
-          break;
-      }
-    });
-
-    connection.on('close', () => {
-      handleDisconnect();
-    });
-
-    connection.on('error', () => {
-      handleDisconnect();
-    });
-
-    // Start 5s heartbeat interval
-    startHeartbeat();
-  }, [hostRole]);
-
   // Start 3-second starting countdown
   const startCountdown = () => {
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
     setCountdown(3);
-    const interval = setInterval(() => {
+    countdownIntervalRef.current = setInterval(() => {
       setCountdown(prev => {
         if (prev <= 1) {
-          clearInterval(interval);
+          if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+          countdownIntervalRef.current = null;
           updateBattleState('PLAYING');
           return 3;
         }
@@ -317,9 +218,8 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
       if (connRef.current && connRef.current.open) {
         try {
           connRef.current.send({ type: 'PING' });
-        } catch (e) {}
+        } catch {}
 
-        // If no pong response for over 10 seconds, trigger reconnection
         if (Date.now() - lastPongTime.current > 10000 && battleStateRef.current === 'PLAYING') {
           handleDisconnect();
         }
@@ -338,7 +238,6 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
     
     reconnectIntervalRef.current = setInterval(() => {
       setReconnectCountdown(prev => {
-        // If opponent reconnected, clear interval
         if (connRef.current && connRef.current.open && Date.now() - lastPongTime.current < 8000) {
           clearInterval(reconnectIntervalRef.current!);
           updateBattleState('PLAYING');
@@ -349,7 +248,7 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
                 type: 'STATE_SYNC',
                 gameState: latestGameState.current
               });
-            } catch (e) {}
+            } catch {}
           }
           return 30;
         }
@@ -365,9 +264,144 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
     }, 1000);
   };
 
+  // Setup connection event listeners
+  const setupConnection = useCallback((connection: DataConnection) => {
+    connRef.current = connection;
+    lastPongTime.current = Date.now();
+    connectedRef.current = false;
+
+    connection.on('open', () => {
+      connectedRef.current = true;
+      if (joinTimeoutRef.current) {
+        clearTimeout(joinTimeoutRef.current);
+        joinTimeoutRef.current = null;
+      }
+
+      if (isHost.current) {
+        const roles = hostRoleRef.current || (Math.random() > 0.5 ? 'X' : 'O');
+        const opponentRole = roles === 'X' ? 'O' : 'X';
+        updateMyRole(roles);
+        
+        if (connection.open) {
+          connection.send({
+            type: 'HANDSHAKE',
+            roles: {
+              host: roles,
+              guest: opponentRole
+            },
+            username: 'Host'
+          });
+        }
+
+        const activeCode = roomCodeRef.current;
+        if (activeCode) {
+          try {
+            const cachedSync = localStorage.getItem(`sttt_battle_state_${activeCode}`);
+            if (cachedSync && connection.open) {
+              connection.send({
+                type: 'STATE_SYNC',
+                gameState: JSON.parse(cachedSync)
+              });
+            }
+          } catch {}
+        }
+
+        updateBattleState('COUNTDOWN');
+        startCountdown();
+      }
+    });
+
+    connection.on('data', (rawData) => {
+      const data = rawData as BattleMessage;
+      if (typeof data !== 'object' || !data.type) return;
+
+      switch (data.type) {
+        case 'HANDSHAKE':
+          if (!isHost.current) {
+            updateMyRole(data.roles.guest);
+            setOpponentUsername(data.username || 'Host');
+            updateBattleState('COUNTDOWN');
+            startCountdown();
+          }
+          break;
+
+        case 'STATE_SYNC':
+          if (data.gameState && gameRef.current) {
+            try {
+              gameRef.current.loadGameState(data.gameState);
+              setCurrentPlayer(data.gameState.currentPlayer);
+              setSuperWinner(data.gameState.superWinner);
+            } catch (e) {
+              console.error("Failed to restore synchronized game state:", e);
+            }
+          }
+          break;
+
+        case 'EMOTE':
+          setOpponentEmote(data.emote);
+          playSoundRef.current('moveO');
+          setTimeout(() => setOpponentEmote(null), 2500);
+          break;
+
+        case 'CHAT':
+          setOpponentChat(data.text);
+          playSoundRef.current('win');
+          setTimeout(() => setOpponentChat(null), 4000);
+          break;
+
+        case 'MOVE':
+          if (gameRef.current) {
+            ignoreNextMoveFromStateChange.current = true;
+            gameRef.current.makeMove(data.game, data.cell);
+          }
+          break;
+
+        case 'REMATCH_REQUEST':
+          rematchRequestedByOpponentRef.current = true;
+          setRematchRequestedByOpponent(true);
+          playSoundRef.current('moveO');
+          break;
+
+        case 'REMATCH_ACCEPT':
+          rematchRequestedByMeRef.current = false;
+          rematchRequestedByOpponentRef.current = false;
+          setRematchRequestedByMe(false);
+          setRematchRequestedByOpponent(false);
+          if (gameRef.current) {
+            gameRef.current.resetGame();
+          }
+          setCountdown(3);
+          updateBattleState('COUNTDOWN');
+          startCountdown();
+          break;
+
+        case 'PING':
+          try { if (connection.open) connection.send({ type: 'PONG' }); } catch {}
+          break;
+
+        case 'PONG':
+          lastPongTime.current = Date.now();
+          break;
+      }
+    });
+
+    connection.on('close', () => {
+      connectedRef.current = false;
+      handleDisconnect();
+    });
+
+    connection.on('error', () => {
+      connectedRef.current = false;
+      handleDisconnect();
+    });
+
+    startHeartbeat();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Host Action: Choose role and initialize
   const handleSelectRole = (choice: 'X' | 'O') => {
-    setHostRole(choice);
+    hostRoleRef.current = choice;
     updateBattleState('CREATING_PEER');
     setErrorMessage('');
     
@@ -398,6 +432,7 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
     updateBattleState('JOINING_PEER');
     setErrorMessage('');
     isHost.current = false;
+    connectedRef.current = false;
     updateRoomCode(inputCode.toUpperCase());
 
     initPeer(null).then(peer => {
@@ -407,9 +442,9 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
         const connection = peer.connect(`stt-${inputCode.toUpperCase()}`);
         setupConnection(connection);
         
-        // Timeout if connection doesn't open within 8 seconds
-        setTimeout(() => {
-          if (connRef.current === null || !connRef.current.open) {
+        if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
+        joinTimeoutRef.current = setTimeout(() => {
+          if (!connectedRef.current) {
             setErrorMessage('Could not connect to room. Code may be invalid or host disconnected.');
             updateBattleState('IDLE');
             cleanup();
@@ -435,7 +470,7 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
       connRef.current.send({ type: 'EMOTE', emote });
       setMyEmote(emote);
       setTimeout(() => setMyEmote(null), 2500);
-    } catch (e) {}
+    } catch {}
   };
 
   // Custom P2P Chat sender
@@ -447,30 +482,34 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
       setMyChat(sanitizedText);
       setChatInput('');
       setTimeout(() => setMyChat(null), 4000);
-    } catch (e) {}
+    } catch {}
   };
 
   // Trigger Rematch Event
   const handleRequestRematch = () => {
-    if (rematchRequestedByMe || !connRef.current) return;
+    if (rematchRequestedByMeRef.current || !connRef.current) return;
     
+    rematchRequestedByMeRef.current = true;
     setRematchRequestedByMe(true);
     try {
       connRef.current.send({ type: 'REMATCH_REQUEST' });
-    } catch (e) {}
+    } catch {}
 
-    // Consensus triggered if both requested/accepted
-    if (rematchRequestedByOpponent) {
+    if (rematchRequestedByOpponentRef.current) {
       acceptRematch();
     }
   };
 
   const acceptRematch = () => {
+    rematchRequestedByMeRef.current = false;
+    rematchRequestedByOpponentRef.current = false;
     setRematchRequestedByMe(false);
     setRematchRequestedByOpponent(false);
     try {
-      connRef.current.send({ type: 'REMATCH_ACCEPT' });
-    } catch (e) {}
+      if (connRef.current && connRef.current.open) {
+        connRef.current.send({ type: 'REMATCH_ACCEPT' });
+      }
+    } catch {}
 
     if (gameRef.current) {
       gameRef.current.resetGame();
@@ -481,7 +520,7 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
   };
 
   // Trigger sound indicator safely
-  const playSound = (soundName: 'moveO' | 'moveX' | 'win' | 'superWin' | 'error') => {
+  const playSoundFn = (soundName: 'moveO' | 'moveX' | 'win' | 'superWin' | 'error') => {
     if (typeof window !== 'undefined') {
       const isMuted = localStorage.getItem("sttt_mute") === "true";
       if (isMuted) return;
@@ -491,8 +530,9 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
       const audio = new Audio(`${prefix}/sounds/${soundName}.mp3`);
       audio.volume = 0.6;
       audio.play().catch(() => {});
-    } catch (e) {}
+    } catch {}
   };
+  const playSoundRef = useRef(playSoundFn);
 
   // Dynamic game updates hook
   const handleGameStateChange = (state: GameState) => {
@@ -747,7 +787,7 @@ const FriendBattle = ({ mode, onNewGameRequest }: FriendBattleProps) => {
                 {currentPlayer === myRole ? (
                   <span className="text-yellow-400 animate-pulse">Your Turn</span>
                 ) : (
-                  <span className="text-gray-400">Opponent's Turn ({opponentUsername})</span>
+                  <span className="text-gray-400">Opponent&apos;s Turn ({opponentUsername})</span>
                 )}
               </div>
             )}
