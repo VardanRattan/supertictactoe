@@ -32,6 +32,8 @@ interface SuperTicTacToeProps {
   onGameStateChange?: (state: GameState) => void;
   onNewGameRequest?: () => void;
   isAIGame?: boolean;
+  aiType?: 'strategy' | 'neural';
+  onAiTypeChange?: (type: 'strategy' | 'neural') => void;
   onPlayerChoice?: (choice: 'X' | 'O') => void;
   isProcessing?: boolean;
 }
@@ -41,13 +43,13 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
   onGameStateChange, 
   onNewGameRequest,
   isAIGame = false,
+  aiType = 'strategy',
+  onAiTypeChange,
   onPlayerChoice,
   isProcessing = false,
 }, ref) => {
-  // Initialize 9x9 board (9 games, each with 9 cells)
   const createEmptyBoard = () => Array(9).fill(null).map(() => Array(9).fill(null));
   
-  // Consolidate separate states into a single unified gameState object
   const [gameState, setGameState] = useState<GameState>({
     superBoard: createEmptyBoard(),
     currentPlayer: null,
@@ -63,7 +65,6 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
   const [confettiTrigger, setConfettiTrigger] = useState(0);
   const lastEmittedStateRef = useRef<GameState | null>(null);
 
-  // Set page title and meta description for SEO
   useEffect(() => {
     document.title = isAIGame || mode === 'ai_duel'
       ? 'Playing AI Duel - Super Tic Tac Toe'
@@ -81,7 +82,6 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
 
   const audioPlayersRef = useRef<Record<string, HTMLAudioElement> | null>(null);
 
-  // Sound effects setup (with SSR safety) and preloading
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const prefix = process.env.NODE_ENV === 'production' ? '/supertictactoe' : '';
@@ -93,7 +93,6 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
       error: new Audio(`${prefix}/sounds/error.mp3`)
     };
 
-    // Preload all audio assets
     Object.values(audioPlayersRef.current).forEach(audio => {
       audio.load();
     });
@@ -101,10 +100,9 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
 
   const playSound = useCallback((soundName: 'moveO' | 'moveX' | 'win' | 'superWin' | 'error') => {
     if (!audioPlayersRef.current) return;
-    // Check if muted inside localStorage
     if (typeof window !== 'undefined') {
       const isMuted = localStorage.getItem("sttt_mute") === "true";
-      if (isMuted) return; // Mute bypass!
+      if (isMuted) return;
     }
     try {
       const audio = audioPlayersRef.current[soundName];
@@ -124,7 +122,6 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     onGameStateChange(gameState);
   }, [gameState, onGameStateChange]);
 
-  // Check for super winner
   const checkSuperWin = (ownership: (string | null)[]) => {
     for (const line of WINNING_LINES) {
       const [a, b, c] = line;
@@ -137,7 +134,6 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     return null;
   };
 
-  // UI color scheme
   const colors = {
     background: 'bg-transparent',
     board: 'glass-panel border border-white/5',
@@ -152,7 +148,6 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     }
   };
 
-  // Check if a game is won
   const checkWin = (board: (string | null)[]) => {
     for (let i = 0; i < WINNING_LINES.length; i++) {
       const [a, b, c] = WINNING_LINES[i];
@@ -171,10 +166,9 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     return board.every(game => isGameFilled(game));
   };
 
-  const findValidGame = (targetGame: number | null, currentSuperBoard: (string | null)[][], fallbackGame: number | null = null, currentHistory: number[] = [], currentOwnership: (string | null)[] = []): number | null => {
+  const findValidGame = (targetGame: number | null, currentSuperBoard: (string | null)[][], fallbackGame: number | null = null, currentHistory: number[] = []): number | null => {
     const isGamePlayable = (gameIdx: number | null): boolean => {
       if (gameIdx === null) return false;
-      if (currentOwnership[gameIdx]) return false;
       return currentSuperBoard[gameIdx].some(cell => cell === null);
     };
 
@@ -244,8 +238,6 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
   const handleClick = (gameIndex: number, cellIndex: number) => {
     if (!gameState.gameStarted || gameState.superWinner) return;
 
-    if (gameState.gameOwnership[gameIndex]) return;
-
     if (gameState.activeGame !== null && gameState.activeGame !== gameIndex) {
       playSound('error');
       return;
@@ -309,7 +301,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     }
 
     const nextPlayer = gameState.currentPlayer === 'O' ? 'X' : 'O';
-    const nextGame = findValidGame(cellIndex, newSuperBoard, gameIndex, finalHistory, nextGameOwnership);
+    const nextGame = findValidGame(cellIndex, newSuperBoard, gameIndex, finalHistory);
 
     if (nextGame === null) {
       const anyPlayableGame = Array.from({length: 9}).some((_, idx) => 
@@ -331,7 +323,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
         playSound('win');
         return;
       } else {
-        const safetyGame = findValidGame(null, newSuperBoard, gameIndex, finalHistory, nextGameOwnership);
+        const safetyGame = findValidGame(null, newSuperBoard, gameIndex, finalHistory);
         setGameState({
           superBoard: newSuperBoard,
           currentPlayer: nextPlayer,
@@ -372,8 +364,8 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
     }
   }));
 
-  const renderCell = (gameIndex: number, cellIndex: number, value: string | null, isZoomed = false, isOwned = false) => {
-    const isPlayable = !isOwned && gameState.gameStarted && (gameState.activeGame === null || gameState.activeGame === gameIndex);
+  const renderCell = (gameIndex: number, cellIndex: number, value: string | null, isZoomed = false) => {
+    const isPlayable = value === null && gameState.gameStarted && (gameState.activeGame === null || gameState.activeGame === gameIndex);
     const isLastMove = gameState.lastMove?.game === gameIndex && gameState.lastMove?.cell === cellIndex;
 
     const cellClasses = `
@@ -399,7 +391,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
       </AnimatePresence>
     );
 
-    if (isOwned) {
+    if (value !== null) {
       return <div className={cellClasses}>{content}</div>;
     }
 
@@ -442,7 +434,7 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
         <div className={`grid grid-cols-3 ${isZoomed ? 'gap-1.5' : 'gap-2'} h-full relative z-20`}>
           {game.map((cell, idx) => (
             <div key={idx} className="aspect-square">
-              {renderCell(gameIndex, idx, cell, isZoomed, !!owner)}
+              {renderCell(gameIndex, idx, cell, isZoomed)}
             </div>
           ))}
         </div>
@@ -535,10 +527,44 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
                 animate={{ opacity: 1, scale: 1 }}
                 className="w-full flex flex-col items-center justify-center gap-4 p-6 glass-panel rounded-2xl border border-white/5 shadow-2xl text-center"
               >
+                {isAIGame && (
+                  <div className="w-full text-left">
+                    <div className="text-[11px] font-semibold text-gray-400 tracking-wider uppercase mb-2">
+                      Opponent Engine
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 p-1 bg-white/5 rounded-xl border border-white/5">
+                      <button
+                        type="button"
+                        onClick={() => onAiTypeChange?.('strategy')}
+                        className={`py-2 px-2.5 rounded-lg text-xs font-semibold transition-all flex flex-col items-center gap-0.5 cursor-pointer ${
+                          aiType === 'strategy'
+                            ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 shadow-sm'
+                            : 'text-gray-400 hover:text-gray-200 border border-transparent'
+                        }`}
+                      >
+                        <span className="font-bold">Strategy Bot</span>
+                        <span className="text-[10px] opacity-70 font-mono">Minimax</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onAiTypeChange?.('neural')}
+                        className={`py-2 px-2.5 rounded-lg text-xs font-semibold transition-all flex flex-col items-center gap-0.5 cursor-pointer ${
+                          aiType === 'neural'
+                            ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                            : 'text-gray-400 hover:text-gray-200 border border-transparent'
+                        }`}
+                      >
+                        <span className="font-bold">Neural Bot</span>
+                        <span className="text-[10px] opacity-70 font-mono">AlphaZero</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <h2 className={`text-lg font-bold tracking-wide ${colors.accent}`}>
                   {isAIGame ? 'Choose Your Side' : 'Select Starting Player'}
                 </h2>
-                <div className="w-full flex flex-col gap-3 mt-2">
+                <div className="w-full flex flex-col gap-3 mt-1">
                   <motion.button
                     onClick={() => startGame('O')}
                     whileHover={{ scale: 1.03 }}
@@ -564,6 +590,12 @@ const SuperTicTacToe = forwardRef<SuperTicTacToeHandle, SuperTicTacToeProps>(({
                 className="w-full flex flex-col items-center justify-center p-6 glass-panel rounded-2xl border border-white/5 shadow-2xl"
               >
                 <div className="text-center mb-4">
+                  {isAIGame && (
+                    <div className="mb-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-mono">
+                      <span className={`w-2 h-2 rounded-full ${aiType === 'neural' ? 'bg-cyan-400 animate-pulse' : 'bg-yellow-400'}`} />
+                      <span className="text-gray-300">{aiType === 'neural' ? 'Neural Bot (AlphaZero)' : 'Strategy Bot (Minimax)'}</span>
+                    </div>
+                  )}
                   <h2 className="text-lg font-bold text-cyan-400 tracking-wider uppercase">Active Sub-Board</h2>
                 </div>
                 <div className="aspect-square w-full max-w-[240px] mx-auto relative">
@@ -596,7 +628,6 @@ SuperTicTacToe.displayName = 'SuperTicTacToe';
 
 export default SuperTicTacToe;
 
-// --- Confetti Celebration Component ---
 interface Particle {
   id: number;
   x: number;

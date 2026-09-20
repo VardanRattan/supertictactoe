@@ -4,7 +4,6 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { Users, Bot, UserPlus, Globe, ArrowLeftCircle, Smile } from 'lucide-react';
 
-// Humorous messages
 const HUMOROUS_MESSAGES = [
   "Warning: Highly addictive gameplay ahead!",
   "You can beat the AI... if you try really hard.",
@@ -34,7 +33,6 @@ interface GameModeProps {
   onClick: () => void;
 }
 
-// GameMode component for individual tiles with rich animations
 const GameMode = ({ title, icon: Icon, disabled, onClick }: GameModeProps) => (
   <motion.button
     onClick={onClick}
@@ -72,7 +70,6 @@ interface MainMenuProps {
   onModeSelect: (mode: string) => void;
 }
 
-// Main Menu component
 const MainMenu = ({ onModeSelect }: MainMenuProps) => {
   const [randomMessage, setRandomMessage] = useState("");
 
@@ -83,7 +80,6 @@ const MainMenu = ({ onModeSelect }: MainMenuProps) => {
     { id: 'online_arena', title: 'Online Arena', icon: Globe, disabled: true }
   ], []);
 
-  // Set random message on mount
   useEffect(() => {
     const timer = setTimeout(() => {
       const randomIndex = Math.floor(Math.random() * HUMOROUS_MESSAGES.length);
@@ -131,7 +127,7 @@ const MainMenu = ({ onModeSelect }: MainMenuProps) => {
           ))}
         </motion.div>
 
-        {/* Display Random Message and Icon - Mobile only */}
+
         {randomMessage && (
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
@@ -154,7 +150,6 @@ interface BackToMenuButtonProps {
   onClick: () => void;
 }
 
-// Back to Menu Button component
 const BackToMenuButton = ({ onClick }: BackToMenuButtonProps) => (
   <button
     onClick={onClick}

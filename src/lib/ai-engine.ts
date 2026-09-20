@@ -1,7 +1,5 @@
 "use client";
 
-// --- Types ---
-
 export interface Move {
   game: number;
   cell: number;
@@ -19,1434 +17,448 @@ export interface GameState {
   gameHistory?: number[];
 }
 
-type AnalysisData = Record<string, unknown>;
+const WIN_MASKS = [
+  0b000000111,
+  0b000111000,
+  0b111000000,
+  0b001001001,
+  0b010010010,
+  0b100100100,
+  0b100010001,
+  0b001010100
+];
 
-interface PatternAnalysis {
-  winningMove?: number | null;
-  isWinning?: boolean;
-  forkMove?: number | null;
-  potentialLines?: number;
-  offensivePotential?: number;
-  threats?: Threat[];
-  blockingMove?: number | null;
-  boardStrength?: BoardStrength;
-}
+const WIN_PATTERNS_ARRAY = [
+  [0, 1, 2], [3, 4, 5], [6, 7, 8],
+  [0, 3, 6], [1, 4, 7], [2, 5, 8],
+  [0, 4, 8], [2, 4, 6]
+];
 
-interface Threat {
-  pattern: number[];
-  position: number;
-  type: string;
-}
+const IS_WIN = new Uint8Array(512);
+const WIN_MOVE_MASK = new Uint16Array(512);
+const THREAT_COUNT = new Uint8Array(512);
+const FORK_MASK = new Uint16Array(512);
 
-interface BoardStrength {
-  winningThreats: number;
-  forkPotential: number;
-  centerControl: number;
-  cornerControl: number;
-  blockingValue: number;
-}
-
-interface StrategicAnalysis {
-  type: string;
-  strength: number;
-  moves: StrategicMove[];
-  controlledPositions: Set<number>;
-}
-
-interface StrategicMove {
-  game: number;
-  priority: number;
-  type: string;
-}
-
-interface GameAnalysis {
-  analysis: AnalysisData;
-  timestamp: number;
-}
-
-interface AdaptationEntry {
-  phase: string;
-  timestamp: number;
-  reason: string;
-}
-
-interface ContingencyPlan {
-  primaryTargets: Set<number>;
-  priority: number;
-  backupMoves?: StrategicMoveWithScore[];
-  transitionMoves?: StrategicMoveWithStrength[];
-  blockingMoves?: StrategicMoveWithPriority[];
-}
-
-interface StrategicMoveWithScore extends Move {
-  value: number;
-}
-
-interface StrategicMoveWithStrength {
-  gameIndex: number;
-  strength: BoardStrength;
-}
-
-interface StrategicMoveWithPriority extends Move {
-  priority: number;
-}
-
-// --- AI Config ---
-
-const AI_CONFIG = {
-  MAX_DEPTH: 6,
-  ENDGAME_DEPTH: 8,
-  PATTERNS: {
-    CORNERS: [0, 2, 6, 8],
-    EDGES: [1, 3, 5, 7],
-    CENTER: 4,
-    WIN_PATTERNS: [
-      [0, 1, 2], [3, 4, 5], [6, 7, 8],
-      [0, 3, 6], [1, 4, 7], [2, 5, 8],
-      [0, 4, 8], [2, 4, 6]
-    ],
-    STRONG_POSITIONS: {
-      CENTER_GAME: 4,
-      CORNER_GAMES: [0, 2, 6, 8],
-      EDGE_GAMES: [1, 3, 5, 7]
+(() => {
+  for (let mask = 0; mask < 512; mask++) {
+    let won = false;
+    for (const w of WIN_MASKS) {
+      if ((mask & w) === w) {
+        won = true;
+        break;
+      }
     }
-  },
-  PHASES: {
-    SABOTAGE: 'SABOTAGE',
-    CONTROL: 'CONTROL',
-    SACRIFICE: 'SACRIFICE',
-    ENDGAME: 'ENDGAME'
-  },
-  WEIGHTS: {
-    SUPER_WIN: 10000,
-    IMMEDIATE_WIN: 900,
-    BLOCKING_OPPONENT_WIN: 850,
-    MAINTAIN_SABOTAGE: 800,
-    CONTROL_PATTERN: 700,
-    SACRIFICE_VALUE: 600,
-    PREVENT_OPPONENT_WIN: 750,
-    BLOCK_FORK: 800,
-    FORCED_MOVE_PENALTY: -400,
-    BREAK_STRATEGY_PENALTY: -600,
-    ENABLE_OPPONENT_WIN: -800,
-    PATTERN_MAINTENANCE: 500,
-    RECOVERY_BONUS: 300,
-    DIAGONAL_CONTROL: 200,
-    FORK_SETUP: 400,
-    CONNECTION_STRENGTH: 100,
-    PHASE_MULTIPLIERS: {
-      EARLY_GAME: 1.2,
-      MID_GAME: 1.5,
-      LATE_GAME: 2.0,
-      ENDGAME: 2.5,
-      SABOTAGE: 1.3,
-      CONTROL: 1.5,
-      SACRIFICE: 2.0
-    } as Record<string, number>
-  },
-  DYNAMIC_WEIGHTS: {
-    EARLY_GAME: { CORNER_VALUE: 250, CENTER_VALUE: 350, EDGE_VALUE: 180, CONNECTIVITY: 300, BLOCKING: 250 },
-    MID_GAME: { CORNER_VALUE: 300, CENTER_VALUE: 400, EDGE_VALUE: 200, CONNECTIVITY: 450, BLOCKING: 500 },
-    LATE_GAME: { CORNER_VALUE: 400, CENTER_VALUE: 500, EDGE_VALUE: 300, CONNECTIVITY: 600, BLOCKING: 700 }
-  } as Record<string, { CORNER_VALUE: number; CENTER_VALUE: number; EDGE_VALUE: number; CONNECTIVITY: number; BLOCKING: number }>
+    IS_WIN[mask] = won ? 1 : 0;
+  }
+
+  for (let mask = 0; mask < 512; mask++) {
+    if (IS_WIN[mask]) continue;
+
+    let winMoves = 0;
+    let threats = 0;
+
+    for (let c = 0; c < 9; c++) {
+      if ((mask & (1 << c)) === 0) {
+        const nextMask = mask | (1 << c);
+        if (IS_WIN[nextMask]) {
+          winMoves |= (1 << c);
+          threats++;
+        }
+      }
+    }
+
+    WIN_MOVE_MASK[mask] = winMoves;
+    THREAT_COUNT[mask] = threats;
+  }
+
+  for (let mask = 0; mask < 512; mask++) {
+    if (IS_WIN[mask]) continue;
+    let forkMoves = 0;
+
+    for (let c = 0; c < 9; c++) {
+      if ((mask & (1 << c)) === 0) {
+        const nextMask = mask | (1 << c);
+        if (!IS_WIN[nextMask] && THREAT_COUNT[nextMask] >= 2) {
+          forkMoves |= (1 << c);
+        }
+      }
+    }
+    FORK_MASK[mask] = forkMoves;
+  }
+})();
+
+export type GamePhase = 'SABOTAGE' | 'CONTROL' | 'SACRIFICE' | 'ENDGAME';
+export type ContingencyType = 'PRESERVE' | 'TRANSITION' | 'MITIGATE';
+
+export interface BotWeights {
+  macro2InLine: number;
+  macro1InLine: number;
+  boardOwned: number;
+  targetBoardBonus: number;
+  macroForkBonus: number;
+  criticalBlockPenalty: number;
+  myLocalThreat: number;
+  oppLocalThreat: number;
+  localFork: number;
+  drawBlockerReward: number;
+  centerBoardControl: number;
+  diagonalDominance: number;
+  antiSuicidePenalty: number;
+}
+
+export const DEFAULT_BOT_WEIGHTS: BotWeights = {
+  macro2InLine: 3500,
+  macro1InLine: 800,
+  boardOwned: 1200,
+  targetBoardBonus: 900,
+  macroForkBonus: 1500,
+  criticalBlockPenalty: 1400,
+  myLocalThreat: 180,
+  oppLocalThreat: 220,
+  localFork: 300,
+  drawBlockerReward: 1000,
+  centerBoardControl: 400,
+  diagonalDominance: 500,
+  antiSuicidePenalty: 750,
 };
 
-// --- Pattern Cache ---
+let activeWeights: BotWeights = { ...DEFAULT_BOT_WEIGHTS };
 
-const PatternCache = {
-  boardPatterns: new Map<string, PatternAnalysis>(),
-  gameAnalysis: new Map<string, GameAnalysis>(),
-  patternTypeCache: new Map<string, { analysis: StrategicAnalysis; timestamp: number }>(),
-  MAX_CACHE_SIZE: 5000,
-  
-  generateKey: (board: (string | null)[], player: string) => `${board.join('')}-${player}`,
-  
-  cachePatternAnalysis: (board: (string | null)[], player: string, analysis: PatternAnalysis) => {
-    if (PatternCache.boardPatterns.size >= PatternCache.MAX_CACHE_SIZE) {
-      const firstKey = PatternCache.boardPatterns.keys().next().value;
-      if (firstKey) PatternCache.boardPatterns.delete(firstKey);
+export const setBotWeights = (w: Partial<BotWeights>) => {
+  activeWeights = { ...activeWeights, ...w };
+};
+
+export const getBotWeights = (): BotWeights => ({ ...activeWeights });
+
+export interface StrategicContext {
+  phase: GamePhase;
+  contingencyType: ContingencyType;
+  riskLevel: number;
+  targetBoardsMask: number;
+  macroForkBoardsMask: number;
+  criticalBlockBoardsMask: number;
+  sacrificeBoardsMask: number;
+  primaryWinningLine: number[];
+  phaseWeightMultiplier: number;
+}
+
+interface PersistentBotState {
+  currentPhase: GamePhase;
+  primaryLine: number[] | null;
+  phaseHistory: { from: GamePhase; to: GamePhase; timestamp: number }[];
+  lastBreakTimestamp: number | null;
+}
+
+const botState: PersistentBotState = {
+  currentPhase: 'SABOTAGE',
+  primaryLine: null,
+  phaseHistory: [],
+  lastBreakTimestamp: null
+};
+
+const StrategicPatternAnalyzer = {
+  findMacroForkBoards: (ownershipMe: number, ownershipOpp: number): number => {
+    let forkBoards = 0;
+    const viableLines: number[] = [];
+
+    for (let i = 0; i < WIN_MASKS.length; i++) {
+      const line = WIN_MASKS[i];
+      if ((line & ownershipOpp) === 0) {
+        viableLines.push(line);
+      }
     }
-    const key = PatternCache.generateKey(board, player);
-    const existing = PatternCache.boardPatterns.get(key) || {};
-    PatternCache.boardPatterns.set(key, { ...existing, ...analysis });
-  },
-  
-  getCachedPattern: (board: (string | null)[], player: string) => {
-    const key = PatternCache.generateKey(board, player);
-    return PatternCache.boardPatterns.get(key);
-  },
-  
-  cacheGameAnalysis: (gameState: GameState, gameIndex: number, analysis: AnalysisData) => {
-    const key = `${gameIndex}-${gameState.currentPlayer}`;
-    PatternCache.gameAnalysis.set(key, {
-      analysis,
-      timestamp: Date.now()
-    });
-  },
-  
-  getCachedGameAnalysis: (gameState: GameState, gameIndex: number) => {
-    const key = `${gameIndex}-${gameState.currentPlayer}`;
-    const cached = PatternCache.gameAnalysis.get(key);
-    
-    if (cached && Date.now() - cached.timestamp < 1000) {
-      return cached.analysis;
+
+    for (let i = 0; i < viableLines.length; i++) {
+      for (let j = i + 1; j < viableLines.length; j++) {
+        const shared = (viableLines[i] & viableLines[j]) & ~ownershipMe;
+        if (shared !== 0) {
+          forkBoards |= shared;
+        }
+      }
     }
-    return null;
-  },
-  
-  generatePatternKey: (board: (string | null)[][], patternType: string) => 
-    `${board.map(g => g.join('')).join('')}-${patternType}`,
 
-  cachePatternType: (board: (string | null)[][], patternType: string, analysis: StrategicAnalysis) => {
-    const key = PatternCache.generatePatternKey(board, patternType);
-    PatternCache.patternTypeCache.set(key, {
-      analysis,
-      timestamp: Date.now()
-    });
+    return forkBoards;
   },
 
-  getCachedPatternType: (board: (string | null)[][], patternType: string) => {
-    const key = PatternCache.generatePatternKey(board, patternType);
-    const cached = PatternCache.patternTypeCache.get(key);
+  selectBestSuperLine: (ownershipMe: number, ownershipOpp: number, preferredBoard?: number | null): number[] => {
+    let bestLine = WIN_PATTERNS_ARRAY[0];
+    let bestScore = -Infinity;
+    let fallbackLine = WIN_PATTERNS_ARRAY[0];
+    let fallbackScore = -Infinity;
 
-    if (cached && Date.now() - cached.timestamp < 1000) {
-      return cached.analysis;
+    for (const line of WIN_PATTERNS_ARRAY) {
+      let myCount = 0;
+      let oppCount = 0;
+
+      for (const b of line) {
+        if ((ownershipMe & (1 << b)) !== 0) myCount++;
+        if ((ownershipOpp & (1 << b)) !== 0) oppCount++;
+      }
+
+      const fScore = myCount * 100 - oppCount * 120;
+      if (fScore > fallbackScore) {
+        fallbackScore = fScore;
+        fallbackLine = line;
+      }
+
+      if (oppCount > 0) continue;
+
+      let score = myCount * 300;
+      if (line.includes(4)) score += 150;
+      if (preferredBoard !== undefined && preferredBoard !== null && line.includes(preferredBoard)) {
+        score += 200;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestLine = line;
+      }
     }
-    return null;
-  },
 
-  clearCache: () => {
-    PatternCache.boardPatterns.clear();
-    PatternCache.gameAnalysis.clear();
-    PatternCache.patternTypeCache.clear();
+    return bestScore > -Infinity ? bestLine : fallbackLine;
   }
 };
 
-// --- Winning Analyzer ---
+const RecoverySystem = {
+  assessStrategyBreak: (
+    primaryLine: number[] | null,
+    ownershipMe: number,
+    ownershipOpp: number
+  ): { riskLevel: number; isBroken: boolean; opponentThreatMask: number } => {
+    let opponentThreatMask = 0;
+    let maxOppThreatCount = 0;
 
-const WinningAnalyzer = {
-  WEIGHTS: {
-    IMMEDIATE_WIN: 1000,
-    BLOCKING_OPPONENT_WIN: 900,
-    FORK_OPPORTUNITY: 850,
-    TWO_IN_LINE_VALUE: 400,
-    ENABLE_WIN_NEXT_TURN: 950,
-    
-    PHASE_MULTIPLIERS: {
-      SABOTAGE: 2.5,
-      CONTROL: 2.0,
-      SACRIFICE: 1.5,
-      ENDGAME: 3.0,
-      EARLY_GAME: 1.0,
-      MID_GAME: 1.5,
-      LATE_GAME: 2.0
-    } as Record<string, number>,
-    
-    POSITION: {
-      CENTER: 100,
-      CORNER: 75,
-      EDGE: 50
-    }
-  },
+    for (const line of WIN_PATTERNS_ARRAY) {
+      let oppCount = 0;
+      let emptyIdx = -1;
 
-  findWinningMove: (board: (string | null)[], player: string) => {
-    const cached = PatternCache.getCachedPattern(board, player);
-    if (cached?.winningMove !== undefined) {
-      return cached.winningMove;
+      for (const b of line) {
+        if ((ownershipOpp & (1 << b)) !== 0) oppCount++;
+        else if ((ownershipMe & (1 << b)) === 0) emptyIdx = b;
+      }
+
+      if (oppCount === 2 && emptyIdx !== -1) {
+        opponentThreatMask |= (1 << emptyIdx);
+        maxOppThreatCount++;
+      }
     }
 
-    let winningMove = null;
-    for (let i = 0; i < board.length; i++) {
-      if (board[i] === null) {
-        const testBoard = [...board];
-        testBoard[i] = player;
-        if (WinningAnalyzer.isWinningBoard(testBoard, player)) {
-          winningMove = i;
+    let isBroken = false;
+    if (primaryLine) {
+      for (const b of primaryLine) {
+        if ((ownershipOpp & (1 << b)) !== 0) {
+          isBroken = true;
           break;
         }
       }
+    } else {
+      isBroken = true;
     }
 
-    PatternCache.cachePatternAnalysis(board, player, { winningMove });
-    return winningMove;
+    let riskLevel = 1;
+    if (maxOppThreatCount >= 2) riskLevel = 4;
+    else if (maxOppThreatCount === 1) riskLevel = 3;
+    else if (isBroken) riskLevel = 2;
+
+    return { riskLevel, isBroken, opponentThreatMask };
   },
 
-  isWinningBoard: (board: (string | null)[], player: string) => {
-    const cached = PatternCache.getCachedPattern(board, player);
-    if (cached?.isWinning !== undefined) {
-      return cached.isWinning;
+  planContingency: (
+    isBroken: boolean,
+    riskLevel: number,
+    primaryLine: number[] | null,
+    ownershipMe: number,
+    ownershipOpp: number,
+    lastMoveGame?: number | null
+  ): { contingencyType: ContingencyType; activeLine: number[] } => {
+    if (riskLevel >= 3) {
+      const activeLine = primaryLine || StrategicPatternAnalyzer.selectBestSuperLine(ownershipMe, ownershipOpp);
+      return { contingencyType: 'MITIGATE', activeLine };
     }
 
-    const isWinning = AI_CONFIG.PATTERNS.WIN_PATTERNS.some(pattern => {
-      const [a, b, c] = pattern;
-      return board[a] === player && board[b] === player && board[c] === player;
-    });
-
-    PatternCache.cachePatternAnalysis(board, player, { isWinning });
-    return isWinning;
-  },
-
-  findForkMove: (board: (string | null)[], player: string) => {
-    const cached = PatternCache.getCachedPattern(board, player);
-    if (cached?.forkMove !== undefined) {
-      return cached.forkMove;
+    if (isBroken || !primaryLine) {
+      const newLine = StrategicPatternAnalyzer.selectBestSuperLine(ownershipMe, ownershipOpp, lastMoveGame);
+      return { contingencyType: 'TRANSITION', activeLine: newLine };
     }
 
-    const moves: { position: number; winningLines: number }[] = [];
-    for (let i = 0; i < board.length; i++) {
-      if (board[i] === null) {
-        const testBoard = [...board];
-        testBoard[i] = player;
-        const winningLines = WinningAnalyzer.countPotentialWinningLines(testBoard, player);
-        if (winningLines >= 2) {
-          moves.push({ position: i, winningLines });
-        }
-      }
-    }
-
-    const bestMove = moves.sort((a, b) => b.winningLines - a.winningLines)[0]?.position ?? null;
-    PatternCache.cachePatternAnalysis(board, player, { forkMove: bestMove });
-    return bestMove;
-  },
-
-  countPotentialWinningLines: (board: (string | null)[], player: string) => {
-    const cached = PatternCache.getCachedPattern(board, player);
-    if (cached?.potentialLines !== undefined) {
-      return cached.potentialLines;
-    }
-
-    const count = AI_CONFIG.PATTERNS.WIN_PATTERNS.filter(pattern => {
-      const [a, b, c] = pattern;
-      const cells = [board[a], board[b], board[c]];
-      const playerCount = cells.filter(cell => cell === player).length;
-      const emptyCount = cells.filter(cell => cell === null).length;
-      return playerCount === 2 && emptyCount === 1;
-    }).length;
-
-    PatternCache.cachePatternAnalysis(board, player, { potentialLines: count });
-    return count;
-  },
-
-  evaluateOffensivePotential: (board: (string | null)[], player: string) => {
-    const cached = PatternCache.getCachedPattern(board, player);
-    if (cached?.offensivePotential !== undefined) {
-      return cached.offensivePotential;
-    }
-
-    let score = 0;
-    const gameStage = PhaseManager.getGameStage({ superBoard: [board] } as unknown as GameState);
-    const phaseMultiplier = WinningAnalyzer.WEIGHTS.PHASE_MULTIPLIERS[gameStage] || 1;
-    
-    const emptySpots = board.map((cell, index) => cell === null ? index : -1)
-      .filter(idx => idx !== -1);
-    
-    for (const spot of emptySpots) {
-      const testBoard = [...board];
-      testBoard[spot] = player;
-      
-      if (WinningAnalyzer.isWinningBoard(testBoard, player)) {
-        score += WinningAnalyzer.WEIGHTS.IMMEDIATE_WIN * phaseMultiplier;
-        continue;
-      }
-      
-      const forkMove = WinningAnalyzer.findForkMove(testBoard, player);
-      if (forkMove !== null) {
-        score += WinningAnalyzer.WEIGHTS.FORK_OPPORTUNITY * phaseMultiplier;
-      }
-      
-      if (spot === 4) { // Center
-        score += WinningAnalyzer.WEIGHTS.POSITION.CENTER;
-      } else if ([0, 2, 6, 8].includes(spot)) { // Corners
-        score += WinningAnalyzer.WEIGHTS.POSITION.CORNER;
-      } else { // Edges
-        score += WinningAnalyzer.WEIGHTS.POSITION.EDGE;
-      }
-      
-      const twoInLines = WinningAnalyzer.countPotentialWinningLines(testBoard, player);
-      score += twoInLines * WinningAnalyzer.WEIGHTS.TWO_IN_LINE_VALUE * phaseMultiplier;
-    }
-
-    PatternCache.cachePatternAnalysis(board, player, { offensivePotential: score });
-    return score;
-  },
-
-  analyzeThreats: (board: (string | null)[], player: string) => {
-    const cached = PatternCache.getCachedPattern(board, player);
-    if (cached?.threats !== undefined) {
-      return cached.threats;
-    }
-
-    const threats: Threat[] = [];
-    AI_CONFIG.PATTERNS.WIN_PATTERNS.forEach(pattern => {
-      const [a, b, c] = pattern;
-      const cells = [board[a], board[b], board[c]];
-      const playerCells = cells.filter(cell => cell === player);
-      const emptyCells = cells.filter(cell => cell === null);
-      
-      if (playerCells.length === 2 && emptyCells.length === 1) {
-        const threatPosition = pattern[cells.findIndex(cell => cell === null)];
-        threats.push({
-          pattern,
-          position: threatPosition,
-          type: 'immediate'
-        });
-      }
-    });
-
-    PatternCache.cachePatternAnalysis(board, player, { threats });
-    return threats;
-  },
-
-  findBlockingMove: (board: (string | null)[], player: string) => {
-    const cached = PatternCache.getCachedPattern(board, player);
-    if (cached?.blockingMove !== undefined) {
-      return cached.blockingMove;
-    }
-
-    const opponent = player === 'X' ? 'O' : 'X';
-    const threats = WinningAnalyzer.analyzeThreats(board, opponent);
-    
-    const blockingMove = threats.length > 0 ? threats[0].position : null;
-    PatternCache.cachePatternAnalysis(board, player, { blockingMove });
-    return blockingMove;
-  },
-
-  evaluateBoardStrength: (board: (string | null)[], player: string) => {
-    const cached = PatternCache.getCachedPattern(board, player);
-    if (cached?.boardStrength !== undefined) {
-      return cached.boardStrength;
-    }
-
-    const strength: BoardStrength = {
-      winningThreats: WinningAnalyzer.countPotentialWinningLines(board, player),
-      forkPotential: WinningAnalyzer.findForkMove(board, player) !== null ? 1 : 0,
-      centerControl: board[4] === player ? 1 : 0,
-      cornerControl: [0, 2, 6, 8].filter(i => board[i] === player).length,
-      blockingValue: WinningAnalyzer.findBlockingMove(board, player) !== null ? 1 : 0
-    };
-
-    PatternCache.cachePatternAnalysis(board, player, { boardStrength: strength });
-    return strength;
+    return { contingencyType: 'PRESERVE', activeLine: primaryLine };
   }
 };
-
-// --- Minimax Optimizer ---
-
-const MinimaxOptimizer = {
-  transpositionTable: new Map<string, { depth: number; score: number; move: Move | null }>(),
-
-  orderMoves: (gameState: GameState, validMoves: Move[]) => {
-    try {
-      return validMoves.map(move => ({
-        move,
-        weight: EnhancedAIEngine.calculateCumulativeWeight(
-          WinningAnalyzer.evaluateOffensivePotential(
-            gameState.superBoard[move.game],
-            gameState.currentPlayer!
-          ),
-          gameState,
-          move,
-          { includePattern: true }
-        ) || 0
-      }))
-      .sort((a, b) => b.weight - a.weight)
-      .map(item => item.move);
-    } catch (error) {
-      console.error("Error in move ordering:", error);
-      return validMoves;
-    }
-  },
-
-  generatePositionKey: (gameState: GameState) => {
-    return `${gameState.superBoard.map(game => game.join('')).join('')}-${gameState.currentPlayer}-${gameState.activeGame}-${gameState.previousGame ?? 'null'}`;
-  },
-
-  getCachedEvaluation: (gameState: GameState, depth: number) => {
-    const key = MinimaxOptimizer.generatePositionKey(gameState);
-    const cached = MinimaxOptimizer.transpositionTable.get(key);
-    
-    if (cached && cached.depth >= depth) {
-      return cached;
-    }
-    return null;
-  },
-
-  cacheEvaluation: (gameState: GameState, depth: number, score: number, move: Move | null) => {
-    const key = MinimaxOptimizer.generatePositionKey(gameState);
-    MinimaxOptimizer.transpositionTable.set(key, { depth, score, move });
-  },
-
-  clearCache: () => {
-    MinimaxOptimizer.transpositionTable.clear();
-  }
-};
-
-// --- Strategic Pattern Analyzer ---
-
-const StrategicPatternAnalyzer = {
-  PATTERN_TYPES: {
-    DIAGONAL_DOMINANCE: 'DIAGONAL_DOMINANCE',
-    CORNER_CONTROL: 'CORNER_CONTROL',
-    CENTER_EXPANSION: 'CENTER_EXPANSION',
-    EDGE_SQUEEZE: 'EDGE_SQUEEZE',
-    FORK_SETUP: 'FORK_SETUP'
-  },
-
-  WEIGHTS: {
-    PATTERN_COMPLETION: 700,
-    PATTERN_SETUP: 500,
-    PATTERN_DISRUPTION: 400,
-    PATTERN_DEFENSE: 300,
-    PATTERN_MULTIPLIERS: {
-      CRITICAL: 2.0,
-      HIGH: 1.5,
-      MEDIUM: 1.0,
-      LOW: 0.5
-    } as Record<string, number>
-  },
-
-  state: {
-    activePatterns: new Set<string>(),
-    patternHistory: [] as unknown[],
-    patternStrengths: new Map<string, number>()
-  },
-
-  analyzePatterns: (gameState: GameState) => {
-    const patterns = new Map<string, StrategicAnalysis>();
-    
-    try {
-      Object.values(StrategicPatternAnalyzer.PATTERN_TYPES).forEach(patternType => {
-        const analysis = StrategicPatternAnalyzer.analyzePatternType(gameState, patternType);
-        if (analysis && analysis.strength > 0) {
-          patterns.set(patternType, analysis);
-        }
-      });
-      StrategicPatternAnalyzer.updatePatternState(patterns);
-    } catch (error) {
-      console.error("Error in pattern analysis:", error);
-      return new Map();
-    }
-    
-    return patterns;
-  },
-
-  analyzePatternType: (gameState: GameState, patternType: string) => {
-    const cached = PatternCache.getCachedPatternType(gameState.superBoard, patternType);
-    if (cached) return cached;
-
-    const analysis: StrategicAnalysis = {
-      type: patternType,
-      strength: 0,
-      moves: [],
-      controlledPositions: new Set<number>()
-    };
-
-    switch (patternType) {
-      case StrategicPatternAnalyzer.PATTERN_TYPES.DIAGONAL_DOMINANCE: {
-        const diagonals = [
-          {positions: [0, 4, 8]},
-          {positions: [2, 4, 6]}
-        ];
-
-        diagonals.forEach(diagonal => {
-          let diagonalStrength = 0;
-          const availableMoves: StrategicMove[] = [];
-
-          diagonal.positions.forEach(pos => {
-            if (gameState.gameOwnership[pos] === gameState.currentPlayer) {
-              diagonalStrength += 300;
-              analysis.controlledPositions.add(pos);
-            } else if (!gameState.gameOwnership[pos]) {
-              const gameStrength = WinningAnalyzer.evaluateBoardStrength(
-                gameState.superBoard[pos],
-                gameState.currentPlayer!
-              );
-
-              if (gameStrength.winningThreats > 0) {
-                diagonalStrength += 200;
-                availableMoves.push({
-                  game: pos,
-                  priority: gameStrength.winningThreats,
-                  type: 'winning'
-                });
-              }
-            }
-          });
-
-          analysis.strength = Math.max(analysis.strength, diagonalStrength);
-          analysis.moves.push(...availableMoves);
-        });
-        break;
-      }
-
-      case StrategicPatternAnalyzer.PATTERN_TYPES.CORNER_CONTROL: {
-        const corners = [0, 2, 6, 8];
-        corners.forEach(corner => {
-          if (gameState.gameOwnership[corner] === gameState.currentPlayer) {
-            analysis.strength += 250;
-            analysis.controlledPositions.add(corner);
-          } else if (!gameState.gameOwnership[corner]) {
-            const gameStrength = WinningAnalyzer.evaluateBoardStrength(
-              gameState.superBoard[corner],
-              gameState.currentPlayer!
-            );
-
-            if (gameStrength.winningThreats > 0) {
-              analysis.strength += 150;
-              analysis.moves.push({
-                game: corner,
-                priority: gameStrength.winningThreats,
-                type: 'corner-threat'
-              });
-            }
-          }
-        });
-        break;
-      }
-
-      case StrategicPatternAnalyzer.PATTERN_TYPES.CENTER_EXPANSION: {
-        const center = 4;
-        const adjacentGames = [1, 3, 5, 7];
-
-        if (gameState.gameOwnership[center] === gameState.currentPlayer) {
-          analysis.strength += 400;
-          analysis.controlledPositions.add(center);
-
-          adjacentGames.forEach(adj => {
-            if (!gameState.gameOwnership[adj]) {
-              const gameStrength = WinningAnalyzer.evaluateBoardStrength(
-                gameState.superBoard[adj],
-                gameState.currentPlayer!
-              );
-
-              if (gameStrength.winningThreats > 0) {
-                analysis.strength += 100;
-                analysis.moves.push({
-                  game: adj,
-                  priority: gameStrength.winningThreats,
-                  type: 'expansion'
-                });
-              }
-            }
-          });
-        } else if (!gameState.gameOwnership[center]) {
-          const centerStrength = WinningAnalyzer.evaluateBoardStrength(
-            gameState.superBoard[center],
-            gameState.currentPlayer!
-          );
-
-          if (centerStrength.winningThreats > 0) {
-            analysis.strength += 300;
-            analysis.moves.push({
-              game: center,
-              priority: centerStrength.winningThreats * 2,
-              type: 'center-capture'
-            });
-          }
-        }
-        break;
-      }
-
-      case StrategicPatternAnalyzer.PATTERN_TYPES.EDGE_SQUEEZE: {
-        const edges = [1, 3, 5, 7];
-        edges.forEach(edge => {
-          if (gameState.gameOwnership[edge] === gameState.currentPlayer) {
-            analysis.strength += 150;
-            analysis.controlledPositions.add(edge);
-          } else if (!gameState.gameOwnership[edge]) {
-            const gameStrength = WinningAnalyzer.evaluateBoardStrength(
-              gameState.superBoard[edge],
-              gameState.currentPlayer!
-            );
-            if (gameStrength.winningThreats > 0) {
-              analysis.strength += 100;
-              analysis.moves.push({
-                game: edge,
-                priority: gameStrength.winningThreats,
-                type: 'edge-threat'
-              });
-            }
-          }
-        });
-        break;
-      }
-
-      case StrategicPatternAnalyzer.PATTERN_TYPES.FORK_SETUP: {
-        const winPatterns = AI_CONFIG.PATTERNS.WIN_PATTERNS;
-        const player = gameState.currentPlayer!;
-        
-        const patternOwnership = winPatterns.map(pattern => {
-          let ownedCount = 0;
-          let opponentOwnedCount = 0;
-          const openIndices: number[] = [];
-          
-          pattern.forEach(idx => {
-            if (gameState.gameOwnership[idx] === player) {
-              ownedCount++;
-            } else if (gameState.gameOwnership[idx] !== null) {
-              opponentOwnedCount++;
-            } else {
-              openIndices.push(idx);
-            }
-          });
-          
-          return { pattern, ownedCount, opponentOwnedCount, openIndices };
-        });
-        
-        const commonOpenGames = new Map<number, number>();
-        
-        for (let i = 0; i < patternOwnership.length; i++) {
-          const p1 = patternOwnership[i];
-          if (p1.ownedCount >= 1 && p1.opponentOwnedCount === 0 && p1.openIndices.length > 0) {
-            for (let j = i + 1; j < patternOwnership.length; j++) {
-              const p2 = patternOwnership[j];
-              if (p2.ownedCount >= 1 && p2.opponentOwnedCount === 0 && p2.openIndices.length > 0) {
-                const shared = p1.openIndices.find(idx => p2.openIndices.includes(idx));
-                if (shared !== undefined) {
-                  const score = (p1.ownedCount + p2.ownedCount) * 150;
-                  commonOpenGames.set(shared, (commonOpenGames.get(shared) || 0) + score);
-                }
-              }
-            }
-          }
-        }
-        
-        commonOpenGames.forEach((score, gameIdx) => {
-          analysis.strength = Math.max(analysis.strength, score);
-          const gameStrength = WinningAnalyzer.evaluateBoardStrength(
-            gameState.superBoard[gameIdx],
-            player
-          );
-          analysis.moves.push({
-            game: gameIdx,
-            priority: gameStrength.winningThreats * 1.5 + 2,
-            type: 'macro-fork'
-          });
-        });
-        break;
-      }
-
-      default:
-        return null;
-    }
-
-    PatternCache.cachePatternType(gameState.superBoard, patternType, analysis);
-    return analysis;
-  },
-
-  updatePatternState: (patterns: Map<string, StrategicAnalysis>) => {
-    StrategicPatternAnalyzer.state.activePatterns.clear();
-    StrategicPatternAnalyzer.state.patternStrengths.clear();
-
-    patterns.forEach((analysis, patternType) => {
-      if (analysis.strength >= 2) {
-        StrategicPatternAnalyzer.state.activePatterns.add(patternType);
-        StrategicPatternAnalyzer.state.patternStrengths.set(patternType, analysis.strength);
-      }
-    });
-  },
-
-  evaluatePatternMove: (gameState: GameState, move: Move) => {
-    let score = 0;
-
-    Object.values(StrategicPatternAnalyzer.PATTERN_TYPES).forEach(patternType => {
-      const analysis = StrategicPatternAnalyzer.analyzePatternType(gameState, patternType);
-      if (!analysis) return;
-
-      const patternMove = analysis.moves.find(m => m.game === move.game);
-      if (patternMove) {
-        const moveValue = analysis.strength * (patternMove.priority / 3);
-        const multiplierKey = analysis.strength > 700 ? 'CRITICAL' :
-          analysis.strength > 500 ? 'HIGH' :
-          analysis.strength > 300 ? 'MEDIUM' : 'LOW';
-        
-        const multiplier = StrategicPatternAnalyzer.WEIGHTS.PATTERN_MULTIPLIERS[multiplierKey];
-        score += moveValue * multiplier;
-      }
-    });
-
-    return score;
-  }
-};
-
-// --- Recovery System ---
-
-interface RecoveryMetrics {
-  brokenPatterns: Set<number>;
-  riskLevel: number;
-  threatLevel: number;
-  recoveryOptions: RecoveryOption[];
-}
-
-interface RecoveryOption {
-  type: string;
-  priority: number;
-  targetGames: Set<number>;
-}
-
-const RecoverySystem = {
-  RECOVERY_STATES: {
-    NORMAL: 'NORMAL',
-    PARTIAL_BREAK: 'PARTIAL_BREAK',
-    FULL_BREAK: 'FULL_BREAK',
-    REBUILDING: 'REBUILDING',
-    TRANSITION: 'TRANSITION'
-  },
-
-  RISK_LEVELS: {
-    LOW: 1,
-    MEDIUM: 2,
-    HIGH: 3,
-    CRITICAL: 4
-  },
-
-  state: {
-    recoveryState: 'NORMAL',
-    brokenPatterns: new Set<number>(),
-    riskLevel: 1,
-    recoveryAttempts: 0,
-    lastValidPattern: null as number[] | null,
-    alternativePatterns: [] as RecoveryOption[],
-    recoveryStartTime: null as number | null,
-    adaptationHistory: [] as AdaptationEntry[],
-    contingencyPlans: new Map<string, ContingencyPlan>()
-  },
-
-  assessStrategyBreak: (gameState: GameState): RecoveryMetrics => {
-    const metrics: RecoveryMetrics = {
-      brokenPatterns: new Set<number>(),
-      riskLevel: RecoverySystem.RISK_LEVELS.LOW,
-      threatLevel: 0,
-      recoveryOptions: []
-    };
-
-    const patternIntegrity = RecoverySystem.analyzePatternIntegrity(gameState);
-    metrics.brokenPatterns = patternIntegrity.brokenPatterns;
-    metrics.riskLevel = Math.max(metrics.riskLevel, patternIntegrity.riskLevel);
-
-    const threatAnalysis = RecoverySystem.analyzeOpponentThreats(gameState);
-    metrics.threatLevel = threatAnalysis.threatLevel;
-    
-    metrics.recoveryOptions = RecoverySystem.generateRecoveryOptions(
-      gameState,
-      metrics.brokenPatterns,
-      threatAnalysis
-    );
-
-    return metrics;
-  },
-
-  analyzePatternIntegrity: (gameState: GameState) => {
-    const brokenPatterns = new Set<number>();
-    let maxRiskLevel = RecoverySystem.RISK_LEVELS.LOW;
-
-    EnhancedAIEngine.state.sabotageGames.forEach(game => {
-      const boardAnalysis = WinningAnalyzer.evaluateBoardStrength(
-        gameState.superBoard[game],
-        gameState.currentPlayer!
-      );
-
-      const riskLevel = RecoverySystem.calculateRiskLevel(boardAnalysis);
-      maxRiskLevel = Math.max(maxRiskLevel, riskLevel);
-
-      if (riskLevel >= RecoverySystem.RISK_LEVELS.MEDIUM) {
-        brokenPatterns.add(game);
-      }
-    });
-
-    return { brokenPatterns, riskLevel: maxRiskLevel };
-  },
-
-  calculateRiskLevel: (boardAnalysis: BoardStrength) => {
-    if (boardAnalysis.winningThreats >= 2) return RecoverySystem.RISK_LEVELS.CRITICAL;
-    if (boardAnalysis.forkPotential > 0) return RecoverySystem.RISK_LEVELS.HIGH;
-    if (boardAnalysis.winningThreats > 0) return RecoverySystem.RISK_LEVELS.MEDIUM;
-    return RecoverySystem.RISK_LEVELS.LOW;
-  },
-
-  analyzeOpponentThreats: (gameState: GameState) => {
-    const opponent = gameState.currentPlayer === 'X' ? 'O' : 'X';
-    const threats: { gameIndex: number; threatLevel: number; type: string }[] = [];
-    let maxThreatLevel = 0;
-
-    gameState.superBoard.forEach((game, gameIndex) => {
-      if (!gameState.gameOwnership[gameIndex]) {
-        const opponentStrength = WinningAnalyzer.evaluateBoardStrength(game, opponent);
-        
-        if (opponentStrength.winningThreats > 0) {
-          threats.push({
-            gameIndex,
-            threatLevel: opponentStrength.winningThreats * 2 + opponentStrength.forkPotential * 3,
-            type: opponentStrength.forkPotential > 0 ? 'FORK' : 'DIRECT'
-          });
-          maxThreatLevel = Math.max(maxThreatLevel, threats[threats.length - 1].threatLevel);
-        }
-      }
-    });
-
-    return {
-      threats: threats.sort((a, b) => b.threatLevel - a.threatLevel),
-      threatLevel: maxThreatLevel
-    };
-  },
-
-  generateRecoveryOptions: (gameState: GameState, brokenPatterns: Set<number>, threatAnalysis: { threats: { gameIndex: number }[], threatLevel: number }): RecoveryOption[] => {
-    const options: RecoveryOption[] = [];
-    
-    if (brokenPatterns.size === 1) {
-      options.push({
-        type: 'PRESERVE',
-        priority: 3,
-        targetGames: new Set([...EnhancedAIEngine.state.sabotageGames]
-          .filter(game => !brokenPatterns.has(game)))
-      });
-    }
-
-    const alternativePattern = RecoverySystem.findAlternativePattern(gameState, brokenPatterns);
-    if (alternativePattern) {
-      options.push({
-        type: 'TRANSITION',
-        priority: 2,
-        targetGames: new Set(alternativePattern)
-      });
-    }
-
-    if (threatAnalysis.threats.length > 0) {
-      options.push({
-        type: 'MITIGATE',
-        priority: threatAnalysis.threatLevel >= 3 ? 4 : 1,
-        targetGames: new Set(threatAnalysis.threats.map((t) => t.gameIndex))
-      });
-    }
-
-    return options.sort((a, b) => b.priority - a.priority);
-  },
-
-  findAlternativePattern: (gameState: GameState, brokenPatterns: Set<number>) => {
-    const availableGames = Array.from({ length: 9 }, (_, i) => i)
-      .filter(i => !brokenPatterns.has(i) && !gameState.gameOwnership[i]);
-
-    return AI_CONFIG.PATTERNS.WIN_PATTERNS
-      .filter(pattern => 
-        pattern.every(game => availableGames.includes(game)) &&
-        pattern.some(game => EnhancedAIEngine.state.sabotageGames.includes(game))
-      )
-      .sort((a, b) => 
-        RecoverySystem.evaluatePatternStrength(gameState, b) -
-        RecoverySystem.evaluatePatternStrength(gameState, a)
-      )[0];
-  },
-
-  evaluatePatternStrength: (gameState: GameState, pattern: number[]) => {
-    const gameStage = PhaseManager.getGameStage(gameState);
-    const phaseMultiplier = AI_CONFIG.WEIGHTS.PHASE_MULTIPLIERS[gameStage];
-
-    return pattern.reduce((strength, game) => {
-      const gameStrength = WinningAnalyzer.evaluateBoardStrength(
-        gameState.superBoard[game],
-        gameState.currentPlayer!
-      );
-
-      let positionValue = 0;
-      const dw = AI_CONFIG.DYNAMIC_WEIGHTS[gameStage];
-      if (game === 4) positionValue = dw.CENTER_VALUE;
-      else if ([0, 2, 6, 8].includes(game)) positionValue = dw.CORNER_VALUE;
-      else positionValue = dw.EDGE_VALUE;
-
-      return strength + 
-        (gameStrength.winningThreats * AI_CONFIG.WEIGHTS.IMMEDIATE_WIN * 0.2 +
-         gameStrength.forkPotential * AI_CONFIG.WEIGHTS.FORK_SETUP * 0.3 +
-         positionValue) * phaseMultiplier;
-    }, 0);
-  },
-
-  initializeRecovery: (gameState: GameState) => {
-    const metrics = RecoverySystem.assessStrategyBreak(gameState);
-    
-    RecoverySystem.state = {
-      recoveryState: metrics.brokenPatterns.size > 1 
-        ? RecoverySystem.RECOVERY_STATES.FULL_BREAK
-        : RecoverySystem.RECOVERY_STATES.PARTIAL_BREAK,
-      brokenPatterns: metrics.brokenPatterns,
-      riskLevel: metrics.riskLevel,
-      recoveryAttempts: 0,
-      lastValidPattern: null,
-      alternativePatterns: metrics.recoveryOptions,
-      recoveryStartTime: Date.now(),
-      adaptationHistory: [],
-      contingencyPlans: new Map<string, ContingencyPlan>()
-    };
-
-    metrics.recoveryOptions.forEach((option) => {
-      RecoverySystem.state.contingencyPlans.set(
-        option.type,
-        RecoverySystem.generateContingencyPlan(gameState, option)
-      );
-    });
-  },
-
-  generateContingencyPlan: (gameState: GameState, option: RecoveryOption): ContingencyPlan => {
-    switch (option.type) {
-      case 'PRESERVE':
-        return {
-          primaryTargets: new Set(option.targetGames),
-          backupMoves: RecoverySystem.findBackupMoves(gameState, option.targetGames),
-          priority: option.priority
-        };
-      case 'TRANSITION':
-        return {
-          primaryTargets: new Set(option.targetGames),
-          transitionMoves: RecoverySystem.findTransitionMoves(gameState, option.targetGames),
-          priority: option.priority
-        };
-      case 'MITIGATE':
-        return {
-          primaryTargets: new Set(option.targetGames),
-          blockingMoves: RecoverySystem.findBlockingMoves(gameState, option.targetGames),
-          priority: option.priority
-        };
-      default:
-        return { primaryTargets: new Set(), priority: 0 };
-    }
-  },
-
-  findBackupMoves: (gameState: GameState, targetGames: Set<number>) => {
-    const moves: StrategicMoveWithScore[] = [];
-    targetGames.forEach(gameIndex => {
-      const game = gameState.superBoard[gameIndex];
-      const validSquares = game
-        .map((cell, idx) => cell === null ? idx : -1)
-        .filter(idx => idx !== -1);
-      
-      validSquares.forEach(square => {
-        moves.push({
-          game: gameIndex,
-          cell: square,
-          value: RecoverySystem.evaluateBackupMove(gameState, gameIndex, square)
-        });
-      });
-    });
-    return moves.sort((a, b) => b.value - a.value);
-  },
-
-  evaluateBackupMove: (gameState: GameState, gameIndex: number, square: number) => {
-    const testBoard = [...gameState.superBoard[gameIndex]];
-    testBoard[square] = gameState.currentPlayer!;
-    return WinningAnalyzer.evaluateOffensivePotential(testBoard, gameState.currentPlayer!) +
-      (square === 4 ? 200 : [0, 2, 6, 8].includes(square) ? 150 : 100);
-  },
-
-  findTransitionMoves: (gameState: GameState, targetGames: Set<number>) => {
-    const moves: StrategicMoveWithStrength[] = [];
-    targetGames.forEach(gameIndex => {
-      if (!gameState.gameOwnership[gameIndex]) {
-        const gameStrength = WinningAnalyzer.evaluateBoardStrength(
-          gameState.superBoard[gameIndex],
-          gameState.currentPlayer!
-        );
-        if (gameStrength.winningThreats > 0 || gameStrength.forkPotential > 0) {
-          moves.push({ gameIndex, strength: gameStrength });
-        }
-      }
-    });
-    return moves.sort((a, b) => 
-      (b.strength.winningThreats * 2 + b.strength.forkPotential * 3) -
-      (a.strength.winningThreats * 2 + a.strength.forkPotential * 3)
-    );
-  },
-
-  findBlockingMoves: (gameState: GameState, targetGames: Set<number>) => {
-    const opponent = gameState.currentPlayer === 'X' ? 'O' : 'X';
-    const moves: StrategicMoveWithPriority[] = [];
-
-    targetGames.forEach(gameIndex => {
-      const threats = WinningAnalyzer.analyzeThreats(gameState.superBoard[gameIndex], opponent);
-      threats.forEach((threat: Threat) => {
-        moves.push({
-          game: gameIndex,
-          cell: threat.position,
-          priority: threat.type === 'FORK' ? 2 : 1
-        });
-      });
-    });
-    return moves.sort((a, b) => b.priority - a.priority);
-  }
-};
-
-// --- Phase Manager ---
 
 const PhaseManager = {
-  PHASE_THRESHOLDS: {
-    ENDGAME_GAMES_THRESHOLD: 6,
-    SACRIFICE_GAMES_THRESHOLD: 4,
-    CONTROL_GAMES_THRESHOLD: 2,
-    ENDGAME_CONTROL_THRESHOLD: 7,
-    SACRIFICE_CONTROL_THRESHOLD: 5,
-    CONTROL_CONTROL_THRESHOLD: 3
-  },
-
-  state: {
-    currentPhase: null as string | null,
-    phaseHistory: [] as { from: string | null; to: string; timestamp: number }[],
-    strategicTargets: new Set<number>(),
-    phaseStartTime: null as number | null
-  },
-
-  determinePhase: (gameState: GameState) => {
-    const metrics = PhaseManager.calculatePhaseMetrics(gameState);
-    if (metrics.isEndgame) return AI_CONFIG.PHASES.ENDGAME;
-    if (metrics.shouldSacrifice) return AI_CONFIG.PHASES.SACRIFICE;
-    if (metrics.needsControl) return AI_CONFIG.PHASES.CONTROL;
-    return AI_CONFIG.PHASES.SABOTAGE;
-  },
-
-  calculatePhaseMetrics: (gameState: GameState) => {
-    const filledGames = gameState.gameOwnership.filter(owner => owner !== null).length;
-    const opponentControl = PhaseManager.calculateOpponentControl(gameState);
-    const boardStrength = PhaseManager.evaluateBoardStrength(gameState);
-
-    return {
-      isEndgame: filledGames >= PhaseManager.PHASE_THRESHOLDS.ENDGAME_GAMES_THRESHOLD ||
-        opponentControl >= PhaseManager.PHASE_THRESHOLDS.ENDGAME_CONTROL_THRESHOLD,
-      shouldSacrifice: filledGames >= PhaseManager.PHASE_THRESHOLDS.SACRIFICE_GAMES_THRESHOLD ||
-        opponentControl >= PhaseManager.PHASE_THRESHOLDS.SACRIFICE_CONTROL_THRESHOLD,
-      needsControl: filledGames >= PhaseManager.PHASE_THRESHOLDS.CONTROL_GAMES_THRESHOLD ||
-        opponentControl >= PhaseManager.PHASE_THRESHOLDS.CONTROL_CONTROL_THRESHOLD,
-      boardStrength,
-      opponentControl,
-      filledGames
-    };
-  },
-
-  calculateOpponentControl: (gameState: GameState) => {
-    const opponent = gameState.currentPlayer === 'X' ? 'O' : 'X';
-    let controlScore = 0;
-
-    gameState.superBoard.forEach((game, index) => {
-      if (!gameState.gameOwnership[index]) {
-        const gameStrength = WinningAnalyzer.evaluateBoardStrength(game, opponent);
-        if (gameStrength.winningThreats > 0) controlScore++;
-        if (gameStrength.forkPotential > 0) controlScore += 2;
+  determinePhase: (
+    filledBoardsCount: number,
+    riskLevel: number,
+    ownershipMe: number,
+    ownershipOpp: number
+  ): GamePhase => {
+    let nearEndgame = false;
+    for (const line of WIN_PATTERNS_ARRAY) {
+      let myC = 0, oppC = 0, nullC = 0;
+      for (const b of line) {
+        if ((ownershipMe & (1 << b)) !== 0) myC++;
+        else if ((ownershipOpp & (1 << b)) !== 0) oppC++;
+        else nullC++;
       }
-    });
-
-    return controlScore;
-  },
-
-  evaluateBoardStrength: (gameState: GameState) => {
-    const player = gameState.currentPlayer!;
-    let strength = 0;
-    const gameStage = PhaseManager.getGameStage(gameState);
-    const phaseMultiplier = AI_CONFIG.WEIGHTS.PHASE_MULTIPLIERS[gameStage];
-
-    gameState.superBoard.forEach((game, index) => {
-      if (!gameState.gameOwnership[index]) {
-        const gameStrength = WinningAnalyzer.evaluateBoardStrength(game, player);
-        strength += gameStrength.winningThreats * 
-          AI_CONFIG.WEIGHTS.IMMEDIATE_WIN * 0.2 * phaseMultiplier;
-        strength += gameStrength.forkPotential * 
-          AI_CONFIG.WEIGHTS.FORK_SETUP * 0.3 * phaseMultiplier;
-
-        const dw = AI_CONFIG.DYNAMIC_WEIGHTS[gameStage];
-        if (index === 4) strength += dw.CENTER_VALUE;
-        else if ([0, 2, 6, 8].includes(index)) strength += dw.CORNER_VALUE;
-        else strength += dw.EDGE_VALUE;
+      if ((myC === 2 && nullC === 1) || (oppC === 2 && nullC === 1)) {
+        nearEndgame = true;
+        break;
       }
-    });
-    return strength;
+    }
+
+    if (nearEndgame || filledBoardsCount >= 6) return 'ENDGAME';
+    if (riskLevel >= 3 || filledBoardsCount >= 4) return 'SACRIFICE';
+    if (filledBoardsCount >= 2) return 'CONTROL';
+    return 'SABOTAGE';
   },
 
-  phaseStrategies: {
-    [AI_CONFIG.PHASES.SABOTAGE]: {
-      initialize: (gameState: GameState) => {
-        const firstMoveGame = EnhancedAIEngine.findFirstMove(gameState);
-        if (firstMoveGame === null) return null;
-        return PhaseManager.phaseStrategies[AI_CONFIG.PHASES.SABOTAGE]
-          .selectSabotagePattern(gameState, firstMoveGame);
-      },
-      selectSabotagePattern: (gameState: GameState, excludeGame: number) => {
-        const patterns = AI_CONFIG.PATTERNS.WIN_PATTERNS
-          .filter(pattern => !pattern.includes(excludeGame))
-          .map(pattern => ({
-            pattern,
-            value: PhaseManager.phaseStrategies[AI_CONFIG.PHASES.SABOTAGE]
-              .evaluatePatternStrength(gameState, pattern)
-          }))
-          .sort((a, b) => b.value - a.value);
-        return patterns[0]?.pattern || null;
-      },
-      evaluatePatternStrength: (gameState: GameState, pattern: number[]) => {
-        let strength = 0;
-        pattern.forEach(gameIndex => {
-          if (gameIndex === 4) strength += 3;
-          if ([0, 2, 6, 8].includes(gameIndex)) strength += 2;
-          const gameStrength = WinningAnalyzer.evaluateBoardStrength(
-            gameState.superBoard[gameIndex],
-            gameState.currentPlayer!
-          );
-          strength += gameStrength.winningThreats;
-          strength += gameStrength.forkPotential * 2;
-        });
-        return strength;
-      },
-      evaluateMove: (gameState: GameState, move: Move) => {
-        let score = 0;
-        const pattern = PhaseManager.state.strategicTargets;
-        if (pattern && pattern.has(move.game)) {
-          score += AI_CONFIG.WEIGHTS.MAINTAIN_SABOTAGE;
-          if (move.cell === 4) score += 200;
-          if ([0, 2, 6, 8].includes(move.cell)) score += 150;
+  identifySacrificeBoards: (
+    activeLine: number[],
+    ownershipMe: number,
+    ownershipOpp: number,
+    occupiedBoards: number[]
+  ): number => {
+    let sacrificeMask = 0;
+    for (let b = 0; b < 9; b++) {
+      if (!activeLine.includes(b) && (ownershipMe & (1 << b)) === 0 && (ownershipOpp & (1 << b)) === 0) {
+        if (occupiedBoards[b] !== 0x1FF) {
+          sacrificeMask |= (1 << b);
         }
-        return score;
-      }
-    },
-    [AI_CONFIG.PHASES.CONTROL]: {
-      initialize: (gameState: GameState) => {
-        const metrics = PhaseManager.calculatePhaseMetrics(gameState);
-        return {
-          controlTargets: new Set(PhaseManager.phaseStrategies[AI_CONFIG.PHASES.CONTROL]
-            .identifyControlTargets(gameState, metrics))
-        };
-      },
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      identifyControlTargets: (gameState: GameState, _metrics: Record<string, unknown>) => {
-        const targets: { index: number; priority: number }[] = [];
-        gameState.superBoard.forEach((game, index) => {
-          if (!gameState.gameOwnership[index]) {
-            const strength = WinningAnalyzer.evaluateBoardStrength(game, gameState.currentPlayer!);
-            if (strength.winningThreats > 0 || strength.forkPotential > 0) {
-              targets.push({ index, priority: strength.winningThreats * 2 + strength.forkPotential * 3 });
-            }
-          }
-        });
-        return targets.sort((a, b) => b.priority - a.priority).slice(0, 3).map(t => t.index);
-      },
-      evaluateMove: (gameState: GameState, move: Move) => {
-        let score = 0;
-        const controlTargets = PhaseManager.state.strategicTargets;
-        if (controlTargets && controlTargets.has(move.game)) {
-          score += AI_CONFIG.WEIGHTS.CONTROL_PATTERN;
-          const nextGameStrength = WinningAnalyzer.evaluateBoardStrength(
-            gameState.superBoard[move.cell],
-            gameState.currentPlayer!
-          );
-          if (nextGameStrength.winningThreats > 0) score += 300;
-        }
-        return score;
-      }
-    },
-    [AI_CONFIG.PHASES.SACRIFICE]: {
-      initialize: (gameState: GameState) => {
-        return {
-          sacrificeTargets: new Set(PhaseManager.phaseStrategies[AI_CONFIG.PHASES.SACRIFICE]
-            .selectSacrificeGames(gameState))
-        };
-      },
-      selectSacrificeGames: (gameState: GameState) => {
-        const candidates: { index: number; value: number }[] = [];
-        gameState.superBoard.forEach((game, index) => {
-          if (!gameState.gameOwnership[index]) {
-            const strength = WinningAnalyzer.evaluateBoardStrength(game, gameState.currentPlayer!);
-            candidates.push({ index, value: strength.winningThreats + strength.forkPotential * 2 });
-          }
-        });
-        return candidates.sort((a, b) => a.value - b.value).slice(0, 2).map(c => c.index);
-      },
-      evaluateMove: (gameState: GameState, move: Move) => {
-        let score = 0;
-        const sacrificeTargets = PhaseManager.state.strategicTargets;
-        if (sacrificeTargets && sacrificeTargets.has(move.game)) {
-          score += AI_CONFIG.WEIGHTS.SACRIFICE_VALUE;
-          const nextGameValue = PhaseManager.evaluateBoardStrength(gameState) - PhaseManager.calculateOpponentControl(gameState);
-          if (nextGameValue > 0) score += nextGameValue * 100;
-        }
-        return score;
-      }
-    },
-    [AI_CONFIG.PHASES.ENDGAME]: {
-      initialize: (gameState: GameState) => {
-        return {
-          criticalGames: new Set(PhaseManager.phaseStrategies[AI_CONFIG.PHASES.ENDGAME]
-            .identifyCriticalGames(gameState))
-        };
-      },
-      identifyCriticalGames: (gameState: GameState) => {
-        const critical = new Set<number>();
-        AI_CONFIG.PATTERNS.WIN_PATTERNS.forEach(pattern => {
-          const [a, b, c] = pattern;
-          const ownership = [gameState.gameOwnership[a], gameState.gameOwnership[b], gameState.gameOwnership[c]];
-          if (ownership.filter(owner => owner === gameState.currentPlayer).length === 2 && ownership.includes(null)) {
-            pattern.forEach(idx => { if (!gameState.gameOwnership[idx]) critical.add(idx); });
-          }
-        });
-        return Array.from(critical);
-      },
-      evaluateMove: (gameState: GameState, move: Move) => {
-        let score = 0;
-        const criticalGames = PhaseManager.state.strategicTargets;
-        if (criticalGames && criticalGames.has(move.game)) {
-          score += AI_CONFIG.WEIGHTS.IMMEDIATE_WIN * 2;
-          if (WinningAnalyzer.isWinningBoard([...gameState.superBoard[move.game]], gameState.currentPlayer!)) {
-            score += AI_CONFIG.WEIGHTS.IMMEDIATE_WIN * 3;
-          }
-        }
-        return score;
       }
     }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as Record<string, Record<string, (...args: any[]) => any>>,
-
-  transitionToPhase: (newPhase: string, gameState: GameState) => {
-    if (newPhase === PhaseManager.state.currentPhase) return;
-    PatternCache.clearCache();
-    PhaseManager.state.phaseHistory.push({
-      from: PhaseManager.state.currentPhase,
-      to: newPhase,
-      timestamp: Date.now()
-    });
-    const phaseStrategy = PhaseManager.phaseStrategies[newPhase];
-    if (phaseStrategy && phaseStrategy.initialize) {
-      const strategyState = phaseStrategy.initialize(gameState);
-      PhaseManager.state.strategicTargets = new Set(
-        strategyState?.sacrificeTargets || strategyState?.controlTargets || strategyState?.criticalGames || (Array.isArray(strategyState) ? strategyState : [])
-      );
-    }
-    PhaseManager.state.currentPhase = newPhase;
-    PhaseManager.state.phaseStartTime = Date.now();
-  },
-
-  evaluatePhaseMove: (gameState: GameState, move: Move) => {
-    const currentPhase = PhaseManager.state.currentPhase;
-    if (!currentPhase) return 0;
-    const phaseStrategy = PhaseManager.phaseStrategies[currentPhase];
-    return phaseStrategy?.evaluateMove?.(gameState, move) || 0;
-  },
-
-  getGameStage: (gameState: GameState) => {
-    const filledSquares = gameState.superBoard.reduce((count, game) => 
-      count + game.filter(cell => cell !== null).length, 0);
-    const progress = (filledSquares / 81) * 100;
-    if (progress < 25) return 'EARLY_GAME';
-    if (progress < 50) return 'MID_GAME';
-    return 'LATE_GAME';
-  },
-
-  shouldTransition: (gameState: GameState) => {
-    const metrics = PhaseManager.calculatePhaseMetrics(gameState);
-    const currentPhase = PhaseManager.state.currentPhase;
-    if (metrics.isEndgame && currentPhase !== AI_CONFIG.PHASES.ENDGAME) {
-      return { shouldTransition: true, nextPhase: AI_CONFIG.PHASES.ENDGAME, trigger: 'ENDGAME_THRESHOLD' };
-    }
-    if (metrics.shouldSacrifice && currentPhase !== AI_CONFIG.PHASES.SACRIFICE && currentPhase !== AI_CONFIG.PHASES.ENDGAME) {
-      return { shouldTransition: true, nextPhase: AI_CONFIG.PHASES.SACRIFICE, trigger: 'SACRIFICE_THRESHOLD' };
-    }
-    if (metrics.needsControl && currentPhase === AI_CONFIG.PHASES.SABOTAGE) {
-      return { shouldTransition: true, nextPhase: AI_CONFIG.PHASES.CONTROL, trigger: 'CONTROL_THRESHOLD' };
-    }
-    return { shouldTransition: false, nextPhase: currentPhase, trigger: null };
-  },
-
-  handleTransition: (newPhase: string, trigger: string | null) => {
-    const transition = { from: PhaseManager.state.currentPhase, to: newPhase, trigger, timestamp: Date.now() };
-    PhaseManager.state.phaseHistory.push(transition);
-    return transition;
+    return sacrificeMask;
   }
 };
 
-// --- Enhanced AI Engine (Main) ---
-
-const EnhancedAIEngine = {
-  CONFIG: AI_CONFIG,
-
-  state: {
-    phase: null as string | null,
-    sabotageGames: [] as number[],
-    forbiddenSquares: new Set<number>(),
-    sacrificeGames: new Set<number>(),
-    targetedGames: new Set<number>(),
-    initialized: false
-  },
-
-  calculateCumulativeWeight: (baseWeight: number, gameState: GameState, move: Move, options: { includePosition?: boolean, includePattern?: boolean } = {}) => {
-    const gameStage = PhaseManager.getGameStage(gameState);
-    const phaseMultiplier = AI_CONFIG.WEIGHTS.PHASE_MULTIPLIERS[gameStage] || 1;
-    let weight = baseWeight * phaseMultiplier;
-
-    try {
-      const dw = AI_CONFIG.DYNAMIC_WEIGHTS[gameStage];
-      if (options.includePosition !== false) {
-        if (move.cell === 4) weight += dw.CENTER_VALUE;
-        else if ([0, 2, 6, 8].includes(move.cell)) weight += dw.CORNER_VALUE;
-        else weight += dw.EDGE_VALUE;
-      }
-
-      // Inject Phase-Specific Local Move Weights (Activating your designed Phase Strategy!)
-      const phaseMoveWeight = PhaseManager.evaluatePhaseMove(gameState, move);
-      weight += phaseMoveWeight;
-
-      // Anti-Suicide Filter: Check if this move routes the opponent to a board where they have an immediate win
-      const opponent = gameState.currentPlayer === 'X' ? 'O' : 'X';
-      if (!gameState.gameOwnership[move.cell]) {
-        const nextBoard = gameState.superBoard[move.cell];
-        if (nextBoard.some(c => c === null)) {
-          const oStrength = WinningAnalyzer.evaluateBoardStrength(nextBoard, opponent);
-          if (oStrength.winningThreats > 0) {
-            // Apply heavy penalty for routing to opponent threat zones
-            weight += AI_CONFIG.WEIGHTS.BREAK_STRATEGY_PENALTY; // -600
-          }
-        }
-      }
-
-      if (options.includePattern !== false) {
-        const patterns = StrategicPatternAnalyzer.analyzePatterns(gameState);
-        if (patterns.size > 0) weight += StrategicPatternAnalyzer.WEIGHTS.PATTERN_COMPLETION * (patterns.size / 3);
-      }
-    } catch (error) {
-      console.error("Error in weight calculation:", error);
-      return baseWeight;
+function compileStrategicContext(
+  ownershipMe: number,
+  ownershipOpp: number,
+  occupiedBoards: number[],
+  lastMoveGame: number | null
+): StrategicContext {
+  let filledBoardsCount = 0;
+  for (let i = 0; i < 9; i++) {
+    if ((ownershipMe & (1 << i)) !== 0 || (ownershipOpp & (1 << i)) !== 0 || occupiedBoards[i] === 0x1FF) {
+      filledBoardsCount++;
     }
-    return weight;
-  },
+  }
 
-  getValidMoves: (gameState: GameState) => {
-    const moves: Move[] = [];
-    const { activeGame, superBoard } = gameState;
-    
-    // If we have a specific active game, and it's not full, we MUST play there.
-    if (activeGame !== null && superBoard[activeGame].some(cell => cell === null)) {
-      superBoard[activeGame].forEach((cell, idx) => { 
-        if (cell === null) moves.push({ game: activeGame, cell: idx }); 
-      });
-      return moves;
+  const assessment = RecoverySystem.assessStrategyBreak(botState.primaryLine, ownershipMe, ownershipOpp);
+  const contingency = RecoverySystem.planContingency(
+    assessment.isBroken,
+    assessment.riskLevel,
+    botState.primaryLine,
+    ownershipMe,
+    ownershipOpp,
+    lastMoveGame
+  );
+
+  botState.primaryLine = contingency.activeLine;
+
+  const phase = PhaseManager.determinePhase(
+    filledBoardsCount,
+    assessment.riskLevel,
+    ownershipMe,
+    ownershipOpp
+  );
+
+  if (phase !== botState.currentPhase) {
+    botState.phaseHistory.push({ from: botState.currentPhase, to: phase, timestamp: Date.now() });
+    botState.currentPhase = phase;
+  }
+
+  const macroForkBoardsMask = StrategicPatternAnalyzer.findMacroForkBoards(ownershipMe, ownershipOpp);
+
+  let targetBoardsMask = 0;
+  for (const b of contingency.activeLine) {
+    if ((ownershipMe & (1 << b)) === 0 && (ownershipOpp & (1 << b)) === 0) {
+      targetBoardsMask |= (1 << b);
     }
+  }
 
-    // If activeGame is null or the target game is full (should be handled by routing, 
-    // but this is the robust fallback), we can play anywhere that is not won/full.
-    superBoard.forEach((game, gameIdx) => {
-      // Only allow playing in games that aren't already owned and aren't full
-      if (!gameState.gameOwnership[gameIdx] && game.some(cell => cell === null)) {
-        game.forEach((cell, cellIdx) => { 
-          if (cell === null) moves.push({ game: gameIdx, cell: cellIdx }); 
-        });
+  const sacrificeBoardsMask = phase === 'SACRIFICE' 
+    ? PhaseManager.identifySacrificeBoards(contingency.activeLine, ownershipMe, ownershipOpp, occupiedBoards)
+    : 0;
+
+  const phaseWeightMultiplier = phase === 'ENDGAME' ? 2.5 :
+    phase === 'SACRIFICE' ? 1.8 :
+    phase === 'CONTROL' ? 1.4 : 1.1;
+
+  return {
+    phase,
+    contingencyType: contingency.contingencyType,
+    riskLevel: assessment.riskLevel,
+    targetBoardsMask,
+    macroForkBoardsMask,
+    criticalBlockBoardsMask: assessment.opponentThreatMask,
+    sacrificeBoardsMask,
+    primaryWinningLine: contingency.activeLine,
+    phaseWeightMultiplier
+  };
+}
+
+export class FastBoardState {
+  boardsMe: Uint16Array;
+  boardsOpp: Uint16Array;
+  occupied: Uint16Array;
+  ownershipMe: number;
+  ownershipOpp: number;
+  activeGame: number | null;
+  history: number[];
+
+  constructor() {
+    this.boardsMe = new Uint16Array(9);
+    this.boardsOpp = new Uint16Array(9);
+    this.occupied = new Uint16Array(9);
+    this.ownershipMe = 0;
+    this.ownershipOpp = 0;
+    this.activeGame = null;
+    this.history = [];
+  }
+
+  swapPerspective(): void {
+    const tmpB = this.boardsMe;
+    this.boardsMe = this.boardsOpp;
+    this.boardsOpp = tmpB;
+
+    const tmpO = this.ownershipMe;
+    this.ownershipMe = this.ownershipOpp;
+    this.ownershipOpp = tmpO;
+  }
+
+  static fromGameState(gameState: GameState, myPlayer: string): FastBoardState {
+    const state = new FastBoardState();
+    const oppPlayer = myPlayer === 'X' ? 'O' : 'X';
+
+    for (let g = 0; g < 9; g++) {
+      let maskMe = 0;
+      let maskOpp = 0;
+      const subBoard = gameState.superBoard[g];
+
+      for (let c = 0; c < 9; c++) {
+        const val = subBoard[c];
+        if (val === myPlayer) maskMe |= (1 << c);
+        else if (val === oppPlayer) maskOpp |= (1 << c);
       }
-    });
-    
-    // Final fallback: if everything is won but there are still empty cells (rare draw state)
-    if (moves.length === 0) {
-      superBoard.forEach((game, gameIdx) => {
-        game.forEach((cell, cellIdx) => { 
-          if (cell === null) moves.push({ game: gameIdx, cell: cellIdx }); 
-        });
-      });
+
+      state.boardsMe[g] = maskMe;
+      state.boardsOpp[g] = maskOpp;
+      state.occupied[g] = maskMe | maskOpp;
+
+      const owner = gameState.gameOwnership[g];
+      if (owner === myPlayer) state.ownershipMe |= (1 << g);
+      else if (owner === oppPlayer) state.ownershipOpp |= (1 << g);
     }
 
-    return moves;
-  },
+    state.activeGame = gameState.activeGame;
+    state.history = gameState.gameHistory ? [...gameState.gameHistory] : [];
+    return state;
+  }
 
-  findValidGame: (targetGame: number | null, currentSuperBoard: (string | null)[][], fallbackGame: number | null, gameHistory: number[]): number | null => {
-    const isGamePlayable = (gameIdx: number | null): boolean => {
-      if (gameIdx === null) return false;
-      return currentSuperBoard[gameIdx].some(cell => cell === null);
+  findValidGame(targetGame: number | null, fallbackGame: number | null): number | null {
+    const isGamePlayable = (idx: number | null): boolean => {
+      if (idx === null || idx < 0 || idx > 8) return false;
+      return this.occupied[idx] !== 0x1FF;
     };
 
     if (targetGame !== null && isGamePlayable(targetGame)) {
@@ -1457,254 +469,498 @@ const EnhancedAIEngine = {
       return fallbackGame;
     }
 
-    if (gameHistory && gameHistory.length > 0) {
-      for (let i = gameHistory.length - 1; i >= 0; i--) {
-        const historicGame = gameHistory[i];
-        if (isGamePlayable(historicGame)) {
-          return historicGame;
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      const h = this.history[i];
+      if (isGamePlayable(h)) return h;
+    }
+
+    for (let i = 0; i < 9; i++) {
+      if (isGamePlayable(i)) return i;
+    }
+
+    return null;
+  }
+
+  getValidMoves(): number[] {
+    const moves: number[] = [];
+    const active = this.activeGame;
+
+    if (active !== null && this.occupied[active] !== 0x1FF) {
+      const occ = this.occupied[active];
+      for (let c = 0; c < 9; c++) {
+        if ((occ & (1 << c)) === 0) {
+          moves.push((active << 4) | c);
+        }
+      }
+      return moves;
+    }
+
+    for (let g = 0; g < 9; g++) {
+      if (this.occupied[g] !== 0x1FF) {
+        const occ = this.occupied[g];
+        for (let c = 0; c < 9; c++) {
+          if ((occ & (1 << c)) === 0) {
+            moves.push((g << 4) | c);
+          }
         }
       }
     }
 
-    for (let i = 0; i < 9; i++) {
-      if (isGamePlayable(i)) {
-        return i;
-      }
-    }
-    
-    return null;
-  },
+    return moves;
+  }
 
-  simulateMove: (gameState: GameState, move: Move) => {
-    const newState: GameState = JSON.parse(JSON.stringify(gameState));
-    const player = newState.currentPlayer!;
-    newState.superBoard[move.game][move.cell] = player;
-    
-    // Check if move wins the local game
-    const winResult = WinningAnalyzer.isWinningBoard(newState.superBoard[move.game], player);
-    if (winResult) {
-      newState.gameOwnership[move.game] = player;
-      
-      // Critical Fix: Check if this move wins the Super Board (Terminal Detection)
-      if (WinningAnalyzer.isWinningBoard(newState.gameOwnership, player)) {
-        newState.superWinner = player;
-      }
-    }
+  makeMove(move: number, isMe: boolean): {
+    move: number;
+    prevActive: number | null;
+    prevOwnershipMe: number;
+    prevOwnershipOpp: number;
+    superWon: boolean;
+  } {
+    const g = move >> 4;
+    const c = move & 0xF;
+    const bit = 1 << c;
 
-    newState.previousGame = newState.activeGame;
-    newState.gameHistory = [...(newState.gameHistory || []), move.game];
-    newState.lastMove = move;
-    
-    // Don't calculate next active game if the match is already won
-    if (!newState.superWinner) {
-      newState.activeGame = EnhancedAIEngine.findValidGame(
-        move.cell, 
-        newState.superBoard, 
-        move.game, 
-        newState.gameHistory
-      );
+    const prevActive = this.activeGame;
+    const prevOwnershipMe = this.ownershipMe;
+    const prevOwnershipOpp = this.ownershipOpp;
+
+    if (isMe) {
+      this.boardsMe[g] |= bit;
+      this.occupied[g] |= bit;
+      if ((this.ownershipMe & (1 << g)) === 0 && (this.ownershipOpp & (1 << g)) === 0) {
+        if (IS_WIN[this.boardsMe[g]]) {
+          this.ownershipMe |= (1 << g);
+        }
+      }
     } else {
-      newState.activeGame = null;
-    }
-
-    newState.currentPlayer = player === 'X' ? 'O' : 'X';
-    return newState;
-  },
-
-  evaluatePosition: (gameState: GameState, maximizingPlayer: string) => {
-    let score = 0;
-    const player = maximizingPlayer;
-    const opponent = player === 'X' ? 'O' : 'X';
-
-    if (gameState.superWinner === player) return 1000000;
-    if (gameState.superWinner === opponent) return -1000000;
-
-    // 1. Super Board Position Evaluation
-    gameState.superBoard.forEach((game, idx) => {
-      const pStrength = WinningAnalyzer.evaluateBoardStrength(game, player);
-      const oStrength = WinningAnalyzer.evaluateBoardStrength(game, opponent);
-      
-      score += (pStrength.winningThreats * 100 - oStrength.winningThreats * 100);
-      if (gameState.gameOwnership[idx] === player) score += 500;
-      if (gameState.gameOwnership[idx] === opponent) score -= 500;
-    });
-
-    // Draw-Forcing Tactics: Check if a drawn or highly contested board blocks an opponent's win line
-    AI_CONFIG.PATTERNS.WIN_PATTERNS.forEach(pattern => {
-      const [a, b, c] = pattern;
-      const ownership = [gameState.gameOwnership[a], gameState.gameOwnership[b], gameState.gameOwnership[c]];
-      const opponentCount = ownership.filter(owner => owner === opponent).length;
-      const nullCount = ownership.filter(owner => owner === null).length;
-      
-      if (opponentCount === 2 && nullCount === 1) {
-        const openIdx = pattern.find(idx => gameState.gameOwnership[idx] === null)!;
-        const openGame = gameState.superBoard[openIdx];
-        const isFilled = openGame.every(cell => cell !== null);
-        
-        let hasWinner = false;
-        for (const line of AI_CONFIG.PATTERNS.WIN_PATTERNS) {
-          const [x, y, z] = line;
-          if (openGame[x] && openGame[x] === openGame[y] && openGame[x] === openGame[z]) {
-            hasWinner = true;
-            break;
-          }
-        }
-
-        if (isFilled && !hasWinner) {
-          score += 1500; // Major positional reward for forcing a draw on this critical blocker board
-        } else if (!isFilled) {
-          const oStrength = WinningAnalyzer.evaluateBoardStrength(openGame, opponent);
-          const pStrength = WinningAnalyzer.evaluateBoardStrength(openGame, player);
-          const emptyCells = openGame.filter(c => c === null).length;
-          
-          if (emptyCells <= 3 && oStrength.winningThreats === 0 && pStrength.winningThreats === 0) {
-            score += 500; // Strategic encouragement reward
-          }
-        }
-      }
-    });
-
-    // 2. Routing Destination Scoring (Critical Bug Fix #3 - Refined Perspective)
-    if (gameState.activeGame !== null) {
-      const nextGame = gameState.superBoard[gameState.activeGame];
-      const nextGameOwner = gameState.gameOwnership[gameState.activeGame];
-      
-      if (!nextGameOwner) {
-        const pNextStrength = WinningAnalyzer.evaluateBoardStrength(nextGame, player);
-        const oNextStrength = WinningAnalyzer.evaluateBoardStrength(nextGame, opponent);
-
-        const isOurTurn = gameState.currentPlayer === player;
-        
-        // If it's our turn to play in the destination, we want high offensive potential for US.
-        // If it's the opponent's turn, we want LOW offensive potential for THEM.
-        score += isOurTurn
-          ? (pNextStrength.winningThreats * 300 + pNextStrength.forkPotential * 200)
-          : -(oNextStrength.winningThreats * 300 + oNextStrength.forkPotential * 200);
-      }
-    }
-
-    // 3. Phase-Based Strategic Scoring (Critical Bug Fix #2)
-    const currentPhase = PhaseManager.state.currentPhase;
-    if (currentPhase) {
-      const strategicTargets = PhaseManager.state.strategicTargets;
-      if (strategicTargets.size > 0) {
-        gameState.gameOwnership.forEach((owner, idx) => {
-          if (strategicTargets.has(idx)) {
-            if (owner === player) score += 300;
-            if (owner === opponent) score -= 300;
-          }
-        });
-      }
-      
-      // Additional phase-specific heuristics
-      if (currentPhase === AI_CONFIG.PHASES.ENDGAME) {
-        const criticalGames = PhaseManager.phaseStrategies[AI_CONFIG.PHASES.ENDGAME].identifyCriticalGames(gameState);
-        if (criticalGames) {
-          criticalGames.forEach((idx: number) => {
-            if (gameState.gameOwnership[idx] === player) score += 1000;
-            else if (gameState.gameOwnership[idx] === opponent) score -= 1000;
-          });
+      this.boardsOpp[g] |= bit;
+      this.occupied[g] |= bit;
+      if ((this.ownershipMe & (1 << g)) === 0 && (this.ownershipOpp & (1 << g)) === 0) {
+        if (IS_WIN[this.boardsOpp[g]]) {
+          this.ownershipOpp |= (1 << g);
         }
       }
     }
 
-    return score;
-  },
+    this.history.push(g);
 
-  findFirstMove: (gameState: GameState) => {
-    if (gameState.lastMove) return gameState.lastMove.game;
-    for (let i = 0; i < 9; i++) {
-      for (let j = 0; j < 9; j++) {
-        if (gameState.superBoard[i][j] !== null) return i;
-      }
+    const superWon = IS_WIN[this.ownershipMe] === 1 || IS_WIN[this.ownershipOpp] === 1;
+
+    if (!superWon) {
+      this.activeGame = this.findValidGame(c, g);
+    } else {
+      this.activeGame = null;
     }
-    return null;
-  },
 
-  evaluateMove: (gameState: GameState) => {
-    try {
-      PatternCache.clearCache();
-      MinimaxOptimizer.clearCache();
+    return { move, prevActive, prevOwnershipMe, prevOwnershipOpp, superWon };
+  }
 
-      if (!EnhancedAIEngine.state.initialized) {
-        PhaseManager.phaseStrategies[AI_CONFIG.PHASES.SABOTAGE].initialize(gameState);
-        EnhancedAIEngine.state.initialized = true;
-      }
+  unmakeMove(token: {
+    move: number;
+    prevActive: number | null;
+    prevOwnershipMe: number;
+    prevOwnershipOpp: number;
+  }, isMe: boolean) {
+    const g = token.move >> 4;
+    const c = token.move & 0xF;
+    const mask = ~(1 << c);
 
-      const phase = PhaseManager.determinePhase(gameState);
-      PhaseManager.transitionToPhase(phase, gameState);
+    if (isMe) {
+      this.boardsMe[g] &= mask;
+    } else {
+      this.boardsOpp[g] &= mask;
+    }
+    this.occupied[g] = this.boardsMe[g] | this.boardsOpp[g];
+    this.ownershipMe = token.prevOwnershipMe;
+    this.ownershipOpp = token.prevOwnershipOpp;
+    this.activeGame = token.prevActive;
+    this.history.pop();
+  }
+}
 
-      return iterativeDeepening(gameState, 1000, gameState.currentPlayer!);
-    } catch (error) {
-      console.error('Critical AI error:', error);
-      const valid = EnhancedAIEngine.getValidMoves(gameState);
-      return valid.length > 0 ? valid[0] : null;
+function evaluatePosition(state: FastBoardState, context: StrategicContext, weights: BotWeights = activeWeights): number {
+  if (IS_WIN[state.ownershipMe]) return 1000000;
+  if (IS_WIN[state.ownershipOpp]) return -1000000;
+
+  let score = 0;
+
+  const myOwnership = state.ownershipMe;
+  const oppOwnership = state.ownershipOpp;
+
+  for (const line of WIN_MASKS) {
+    const myCount = (line & myOwnership) !== 0 ? ((line & myOwnership) & ((line & myOwnership) - 1) ? 2 : 1) : 0;
+    const oppCount = (line & oppOwnership) !== 0 ? ((line & oppOwnership) & ((line & oppOwnership) - 1) ? 2 : 1) : 0;
+
+    if (myCount > 0 && oppCount === 0) {
+      score += myCount === 2 ? weights.macro2InLine : weights.macro1InLine;
+    } else if (oppCount > 0 && myCount === 0) {
+      score -= oppCount === 2 ? weights.macro2InLine : weights.macro1InLine;
     }
   }
-};
+
+  for (let g = 0; g < 9; g++) {
+    const bit = 1 << g;
+    const isOwnedByMe = (myOwnership & bit) !== 0;
+    const isOwnedByOpp = (oppOwnership & bit) !== 0;
+
+    if (isOwnedByMe) {
+      score += weights.boardOwned;
+      if ((context.targetBoardsMask & bit) !== 0) score += weights.targetBoardBonus;
+      if ((context.macroForkBoardsMask & bit) !== 0) score += weights.macroForkBonus;
+    } else if (isOwnedByOpp) {
+      score -= weights.boardOwned;
+      if ((context.criticalBlockBoardsMask & bit) !== 0) score -= weights.criticalBlockPenalty;
+    } else {
+      const myThreats = THREAT_COUNT[state.boardsMe[g]];
+      const oppThreats = THREAT_COUNT[state.boardsOpp[g]];
+      score += (myThreats * weights.myLocalThreat - oppThreats * weights.oppLocalThreat);
+
+      const myForks = FORK_MASK[state.boardsMe[g]];
+      if (myForks !== 0) score += weights.localFork;
+
+      if (state.occupied[g] === 0x1FF) {
+        if ((context.criticalBlockBoardsMask & bit) !== 0) {
+          score += weights.drawBlockerReward;
+        }
+      }
+    }
+  }
+
+  if ((myOwnership & (1 << 4)) !== 0) score += weights.centerBoardControl;
+  if ((oppOwnership & (1 << 4)) !== 0) score -= weights.centerBoardControl;
+
+  const myDiag1 = myOwnership & 0b100010001;
+  const myDiag2 = myOwnership & 0b001010100;
+  if ((myDiag1 & (myDiag1 - 1)) !== 0) score += weights.diagonalDominance;
+  else if (myDiag1 !== 0) score += weights.diagonalDominance * 0.4;
+  if ((myDiag2 & (myDiag2 - 1)) !== 0) score += weights.diagonalDominance;
+  else if (myDiag2 !== 0) score += weights.diagonalDominance * 0.4;
+
+  const oppDiag1 = oppOwnership & 0b100010001;
+  const oppDiag2 = oppOwnership & 0b001010100;
+  if ((oppDiag1 & (oppDiag1 - 1)) !== 0) score -= weights.diagonalDominance;
+  else if (oppDiag1 !== 0) score -= weights.diagonalDominance * 0.4;
+  if ((oppDiag2 & (oppDiag2 - 1)) !== 0) score -= weights.diagonalDominance;
+  else if (oppDiag2 !== 0) score -= weights.diagonalDominance * 0.4;
+
+  if (state.activeGame !== null) {
+    const dest = state.activeGame;
+    if ((myOwnership & (1 << dest)) === 0 && (oppOwnership & (1 << dest)) === 0) {
+      const oppThreats = THREAT_COUNT[state.boardsOpp[dest]];
+      if (oppThreats > 0) {
+        score -= weights.antiSuicidePenalty;
+      }
+    }
+  }
+
+  return score * context.phaseWeightMultiplier;
+}
+
+const TT_SIZE = 131072;
+const TT_FLAG_EXACT = 0;
+const TT_FLAG_LOWER = 1;
+const TT_FLAG_UPPER = 2;
+
+interface TTEntry {
+  hashKey: number;
+  depth: number;
+  score: number;
+  flag: number;
+  bestMove: number | null;
+}
+
+const transpositionTable: (TTEntry | null)[] = new Array(TT_SIZE).fill(null);
+const killerMoves: number[][] = Array.from({ length: 20 }, () => [0, 0]);
+const historyHeuristic = new Int32Array(144);
+
+function computeHash(state: FastBoardState, isMe: boolean): number {
+  let h = isMe ? 0x811c9dc5 : 0x9e3779b9;
+  for (let g = 0; g < 9; g++) {
+    h = Math.imul(h ^ state.boardsMe[g], 0xcc9e2d51);
+    h = (h << 13) | (h >>> 19);
+    h = Math.imul(h ^ state.boardsOpp[g], 0x1b873593);
+    h = (h << 15) | (h >>> 17);
+  }
+  h = Math.imul(h ^ (state.activeGame ?? 15), 0x85ebca6b);
+  return h >>> 0;
+}
+
+function scoreMove(
+  move: number,
+  state: FastBoardState,
+  depth: number,
+  ttBestMove: number | null,
+  context: StrategicContext
+): number {
+  if (move === ttBestMove) return 2000000;
+  let score = 0;
+
+  if (killerMoves[depth]) {
+    if (killerMoves[depth][0] === move) score += 500000;
+    else if (killerMoves[depth][1] === move) score += 400000;
+  }
+
+  const g = move >> 4;
+  const c = move & 0xF;
+  const bit = 1 << c;
+
+  if ((WIN_MOVE_MASK[state.boardsMe[g]] & bit) !== 0) score += 200000;
+  if ((WIN_MOVE_MASK[state.boardsOpp[g]] & bit) !== 0) score += 150000;
+
+  if ((context.targetBoardsMask & (1 << g)) !== 0) score += 50000;
+  if ((context.macroForkBoardsMask & (1 << g)) !== 0) score += 40000;
+
+  if (c === 4) score += 10000;
+  else if (c === 0 || c === 2 || c === 6 || c === 8) score += 5000;
+
+  score += historyHeuristic[move];
+  return score;
+}
+
+function orderMoves(
+  moves: number[],
+  state: FastBoardState,
+  depth: number,
+  ttBestMove: number | null,
+  context: StrategicContext
+): number[] {
+  const scores = moves.map(m => scoreMove(m, state, depth, ttBestMove, context));
+  const indices = moves.map((_, i) => i);
+  indices.sort((i, j) => scores[j] - scores[i]);
+  return indices.map(i => moves[i]);
+}
 
 let searchDeadline = 0;
 
-const enhancedMinimax = (gameState: GameState, depth: number, alpha: number, beta: number, isMaximizing: boolean, maximizingPlayer: string): { score: number; move: Move | null } => {
+function alphaBeta(
+  state: FastBoardState,
+  depth: number,
+  alpha: number,
+  beta: number,
+  isMe: boolean,
+  context: StrategicContext,
+  weights: BotWeights = activeWeights
+): { score: number; bestMove: number | null } {
   if (Date.now() > searchDeadline) {
-    throw new Error("Search timeout exceeded");
+    throw new Error("SearchTimeout");
   }
 
-  const cached = MinimaxOptimizer.getCachedEvaluation(gameState, depth);
-  if (cached) return { score: cached.score, move: cached.move };
+  if (IS_WIN[state.ownershipMe]) return { score: 1000000 + depth, bestMove: null };
+  if (IS_WIN[state.ownershipOpp]) return { score: -1000000 - depth, bestMove: null };
 
-  if (depth === 0 || gameState.superWinner) {
-    return { score: EnhancedAIEngine.evaluatePosition(gameState, maximizingPlayer), move: null };
+  if (depth <= 0) {
+    return { score: evaluatePosition(state, context, weights), bestMove: null };
   }
 
-  const validMoves = EnhancedAIEngine.getValidMoves(gameState);
-  if (validMoves.length === 0) return { score: 0, move: null };
+  const hashKey = computeHash(state, isMe);
+  const ttIndex = hashKey & (TT_SIZE - 1);
+  const ttEntry = transpositionTable[ttIndex];
 
-  const orderedMoves = MinimaxOptimizer.orderMoves(gameState, validMoves);
-  let bestMove = null;
-  let bestScore = isMaximizing ? -Infinity : Infinity;
+  if (ttEntry && ttEntry.hashKey === hashKey && ttEntry.depth >= depth) {
+    if (ttEntry.flag === TT_FLAG_EXACT) return { score: ttEntry.score, bestMove: ttEntry.bestMove };
+    if (ttEntry.flag === TT_FLAG_LOWER && ttEntry.score >= beta) return { score: ttEntry.score, bestMove: ttEntry.bestMove };
+    if (ttEntry.flag === TT_FLAG_UPPER && ttEntry.score <= alpha) return { score: ttEntry.score, bestMove: ttEntry.bestMove };
+  }
 
-  for (const move of orderedMoves) {
-    const nextState = EnhancedAIEngine.simulateMove(gameState, move);
-    const result = enhancedMinimax(nextState, depth - 1, alpha, beta, !isMaximizing, maximizingPlayer);
+  const validMoves = state.getValidMoves();
+  if (validMoves.length === 0) {
+    return { score: 0, bestMove: null };
+  }
 
-    if (isMaximizing) {
-      if (result.score > bestScore) { bestScore = result.score; bestMove = move; }
+  const sortedMoves = orderMoves(validMoves, state, depth, ttEntry?.bestMove ?? null, context);
+
+  let bestScore = isMe ? -Infinity : Infinity;
+  let bestMove: number | null = sortedMoves[0];
+  const originalAlpha = alpha;
+
+  for (const move of sortedMoves) {
+    const token = state.makeMove(move, isMe);
+    let resultScore: number;
+
+    try {
+      const child = alphaBeta(state, depth - 1, alpha, beta, !isMe, context, weights);
+      resultScore = child.score;
+    } finally {
+      state.unmakeMove(token, isMe);
+    }
+
+    if (isMe) {
+      if (resultScore > bestScore) {
+        bestScore = resultScore;
+        bestMove = move;
+      }
       alpha = Math.max(alpha, bestScore);
     } else {
-      if (result.score < bestScore) { bestScore = result.score; bestMove = move; }
+      if (resultScore < bestScore) {
+        bestScore = resultScore;
+        bestMove = move;
+      }
       beta = Math.min(beta, bestScore);
     }
-    if (beta <= alpha) break;
+
+    if (beta <= alpha) {
+      if (killerMoves[depth]) {
+        killerMoves[depth][1] = killerMoves[depth][0];
+        killerMoves[depth][0] = move;
+      }
+      historyHeuristic[move] += depth * depth;
+      break;
+    }
   }
 
-  MinimaxOptimizer.cacheEvaluation(gameState, depth, bestScore, bestMove);
-  return { score: bestScore, move: bestMove };
-};
+  let flag = TT_FLAG_EXACT;
+  if (isMe) {
+    if (bestScore <= originalAlpha) flag = TT_FLAG_UPPER;
+    else if (bestScore >= beta) flag = TT_FLAG_LOWER;
+  } else {
+    if (bestScore >= beta) flag = TT_FLAG_LOWER;
+    else if (bestScore <= alpha) flag = TT_FLAG_UPPER;
+  }
 
-const iterativeDeepening = (gameState: GameState, timeLimit: number, maximizingPlayer: string) => {
-  const startTime = Date.now();
-  searchDeadline = startTime + timeLimit;
-  let bestMove = null;
-  let currentDepth = 1;
-  const validMoves = EnhancedAIEngine.getValidMoves(gameState);
+  transpositionTable[ttIndex] = {
+    hashKey,
+    depth,
+    score: bestScore,
+    flag,
+    bestMove
+  };
 
-  if (validMoves.length === 1) return validMoves[0];
-  if (validMoves.length === 0) return null;
+  return { score: bestScore, bestMove };
+}
 
-  while (Date.now() - startTime < timeLimit && currentDepth <= AI_CONFIG.MAX_DEPTH) {
+const EnhancedAIEngine = {
+  getValidMoves: (gameState: GameState): Move[] => {
+    const moves: Move[] = [];
+    const { activeGame, superBoard } = gameState;
+
+    if (activeGame !== null && superBoard[activeGame].some(c => c === null)) {
+      superBoard[activeGame].forEach((c, idx) => {
+        if (c === null) moves.push({ game: activeGame, cell: idx });
+      });
+      return moves;
+    }
+
+    superBoard.forEach((game, gameIdx) => {
+      if (game.some(c => c === null)) {
+        game.forEach((cell, cellIdx) => {
+          if (cell === null) moves.push({ game: gameIdx, cell: cellIdx });
+        });
+      }
+    });
+
+    return moves;
+  },
+
+  evaluateMove: (
+    gameState: GameState,
+    customWeights?: BotWeights,
+    maxTimeMs: number = 750,
+    overrideMaxDepth?: number
+  ): Move | null => {
     try {
-      const result = enhancedMinimax(gameState, currentDepth, -Infinity, Infinity, true, maximizingPlayer);
-      if (result.move) bestMove = result.move;
-      currentDepth++;
-    } catch { break; }
+      const myPlayer = gameState.currentPlayer || 'O';
+      const state = FastBoardState.fromGameState(gameState, myPlayer);
+      const validMoves = state.getValidMoves();
+
+      if (validMoves.length === 0) return null;
+      if (validMoves.length === 1) {
+        return { game: validMoves[0] >> 4, cell: validMoves[0] & 0xF };
+      }
+
+      const weights = customWeights || activeWeights;
+      const lastMoveGame = gameState.lastMove ? gameState.lastMove.game : null;
+      const occupiedArray = Array.from(state.occupied);
+      const context = compileStrategicContext(
+        state.ownershipMe,
+        state.ownershipOpp,
+        occupiedArray,
+        lastMoveGame
+      );
+
+      for (let i = 0; i < 144; i++) historyHeuristic[i] >>= 1;
+
+      searchDeadline = Date.now() + maxTimeMs;
+
+      let bestPackedMove = validMoves[0];
+      const maxDepth = overrideMaxDepth ?? (context.phase === 'ENDGAME' ? 10 : 8);
+
+      for (let depth = 1; depth <= maxDepth; depth++) {
+        try {
+          const result = alphaBeta(state, depth, -Infinity, Infinity, true, context, weights);
+          if (result.bestMove !== null) {
+            bestPackedMove = result.bestMove;
+          }
+          if (result.score >= 900000) break;
+        } catch (e: unknown) {
+          if (e instanceof Error && e.message === "SearchTimeout") {
+            break;
+          }
+          throw e;
+        }
+      }
+
+      return {
+        game: bestPackedMove >> 4,
+        cell: bestPackedMove & 0xF
+      };
+    } catch (err) {
+      console.error("Critical AI error:", err);
+      const fallback = EnhancedAIEngine.getValidMoves(gameState);
+      return fallback.length > 0 ? fallback[0] : null;
+    }
   }
-  return bestMove || validMoves[0];
 };
+
+export function evaluateFastMove(
+  state: FastBoardState,
+  weights: BotWeights = activeWeights,
+  maxTimeMs: number = 10,
+  maxDepthOverride?: number,
+  lastMoveGame: number | null = null
+): number | null {
+  const validMoves = state.getValidMoves();
+  if (validMoves.length === 0) return null;
+  if (validMoves.length === 1) return validMoves[0];
+
+  const occupiedArray = Array.from(state.occupied);
+  const context = compileStrategicContext(
+    state.ownershipMe,
+    state.ownershipOpp,
+    occupiedArray,
+    lastMoveGame
+  );
+
+  for (let i = 0; i < 144; i++) historyHeuristic[i] >>= 1;
+
+  searchDeadline = Date.now() + maxTimeMs;
+  let bestPackedMove = validMoves[0];
+  const maxDepth = maxDepthOverride ?? (context.phase === 'ENDGAME' ? 8 : 5);
+
+  for (let depth = 1; depth <= maxDepth; depth++) {
+    try {
+      const result = alphaBeta(state, depth, -Infinity, Infinity, true, context, weights);
+      if (result.bestMove !== null) {
+        bestPackedMove = result.bestMove;
+      }
+      if (result.score >= 900000) break;
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message === "SearchTimeout") {
+        break;
+      }
+      throw e;
+    }
+  }
+
+  return bestPackedMove;
+}
 
 export const cleanupEngine = () => {
-  PatternCache.clearCache();
-  MinimaxOptimizer.clearCache();
+  transpositionTable.fill(null);
+  killerMoves.forEach(k => { k[0] = 0; k[1] = 0; });
+  historyHeuristic.fill(0);
+  botState.currentPhase = 'SABOTAGE';
+  botState.primaryLine = null;
+  botState.phaseHistory = [];
 };
 
 export default EnhancedAIEngine;

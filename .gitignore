@@ -40,6 +40,11 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# python
+.venv/
+training/.venv/
+__pycache__/
+*.pyc
+
 # antigravity cli
 .antigravitycli/
-

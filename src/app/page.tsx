@@ -65,7 +65,7 @@ export default function Home() {
   };
 
   return (
-    <main className={`min-h-screen md:h-screen md:overflow-hidden bg-space-grid text-gray-100 flex flex-col justify-between relative overflow-x-hidden ${getThemeClassName()}`}>
+    <main className="min-h-screen md:h-screen md:overflow-hidden bg-gray-900 text-gray-100 flex flex-col justify-between relative overflow-x-hidden">
       
       {/* Floating Settings Button */}
       <button

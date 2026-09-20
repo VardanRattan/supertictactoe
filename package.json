@@ -15,6 +15,8 @@
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.14.0",
     "next": "16.2.6",
+    "onnxruntime-node": "^1.30.0",
+    "onnxruntime-web": "^1.30.0",
     "peerjs": "^1.5.5",
     "react": "19.2.4",
     "react-dom": "19.2.4",
